@@ -1,0 +1,1313 @@
+---
+title: "Análisis de brotes epidemiológicos"
+format: html
+engine: knitr
+shinylive:
+  packages:
+    - "shiny"
+    - "bslib"
+    - "htmltools"
+    - "dplyr"
+    - "readr"
+    - "yaml"
+    - "scales"
+    - "colorspace"
+    - "munsell"
+    - "ggplot2"
+  preload: true
+  include-dependencies: true
+  check-dependencies: false
+  base-url: https://webr.r-wasm.org
+filters:
+  - shinylive
+---
+
+```{shinylive-r}
+#| standalone: true
+#| viewerHeight: 700
+
+if (!requireNamespace("munsell", quietly = TRUE)) {
+  install.packages("munsell", repos = "https://webr.r-wasm.org")
+}
+library(munsell, character.only = TRUE)
+
+library(shiny)
+library(bslib)
+library(htmltools)
+library(yaml)
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+# =========================
+# FUNCIONES AUXILIARES
+# =========================
+
+colapsar_errores <- function(x) {
+  if (length(x) == 0) return("")
+  paste("•", x, collapse = "\n")
+}
+
+determinar_tipo_variable <- function(col, tipo_especificado = NA) {
+  if (length(tipo_especificado) > 1) {
+    tipo_especificado <- tipo_especificado[1]
+  }
+  
+  if (length(tipo_especificado) >= 1 && !is.na(tipo_especificado[1])) {
+    if (tipo_especificado[1] == "cuantitativa") return("cuantitativa")
+    if (tipo_especificado[1] == "cualitativa") return("cualitativa")
+  }
+  
+  if (!is.numeric(col)) return("cualitativa")
+  
+  valores_no_na <- col[!is.na(col)]
+  if (length(valores_no_na) == 0) return("cualitativa")
+  
+  n_unicos <- length(unique(valores_no_na))
+  if (n_unicos <= 10) return("cualitativa")
+  
+  return("cuantitativa")
+}
+
+# =========================
+# FUNCIÓN: DESCRIPCIÓN UNIVARIADA 
+# =========================
+
+generar_descripcion_univariada <- function(datos, variables_sociodem) {
+  
+  if (is.null(variables_sociodem) || length(variables_sociodem) == 0) {
+    return(list(error = "No se definieron variables sociodemográficas"))
+  }
+  
+  es_formato_nuevo <- FALSE
+  nombres_vars <- character(0)
+  tipos_vars <- character(0)
+  
+  if (is.list(variables_sociodem) && length(variables_sociodem) > 0) {
+    primer_elemento <- variables_sociodem[[1]]
+    
+    if (is.list(primer_elemento) && 
+        "nombre" %in% names(primer_elemento) && 
+        "tipo" %in% names(primer_elemento)) {
+      es_formato_nuevo <- TRUE
+      
+      nombres_vars <- sapply(variables_sociodem, function(x) x$nombre)
+      tipos_vars <- sapply(variables_sociodem, function(x) {
+        tipo <- x$tipo
+        if (length(tipo) > 1) tipo <- tipo[1]
+        return(tipo)
+      })
+    } else {
+      nombres_vars <- as.character(variables_sociodem)
+      tipos_vars <- rep(NA_character_, length(nombres_vars))
+    }
+  } else {
+    nombres_vars <- as.character(variables_sociodem)
+    tipos_vars <- rep(NA, length(nombres_vars))
+  }
+  
+  vars_faltantes <- setdiff(nombres_vars, names(datos))
+  if (length(vars_faltantes) > 0) {
+    return(list(error = paste("Variables no encontradas:", paste(vars_faltantes, collapse = ", "))))
+  }
+  
+  resultados <- list()
+  
+  for (i in seq_along(nombres_vars)) {
+    var <- nombres_vars[i]
+    tipo_especificado <- if (es_formato_nuevo) tipos_vars[i] else NA
+    col_original <- datos[[var]]
+    
+    tipo_final <- determinar_tipo_variable(col_original, tipo_especificado)
+    
+    col_procesada <- col_original
+    
+    if (tipo_final == "cualitativa") {
+      col_procesada <- as.factor(col_procesada)
+    } else if (tipo_final == "cuantitativa") {
+      if (!is.numeric(col_procesada)) {
+        col_numerica <- suppressWarnings(as.numeric(as.character(col_procesada)))
+        
+        n_converted <- sum(!is.na(col_numerica))
+        n_total <- sum(!is.na(col_procesada))
+        
+        if (n_total > 0) {
+          proporcion_convertida <- n_converted / n_total
+          
+          if (proporcion_convertida < 0.5) {
+            tipo_final <- "cualitativa"
+            col_procesada <- as.factor(col_original)
+          } else {
+            col_procesada <- col_numerica
+          }
+        } else {
+          tipo_final <- "cualitativa"
+          col_procesada <- as.factor(col_original)
+        }
+      }
+    }
+    
+    if (tipo_final == "cuantitativa") {
+      n_validos <- sum(!is.na(col_procesada))
+      
+      if (n_validos > 0) {
+        media_val <- mean(col_procesada, na.rm = TRUE)
+        mediana_val <- median(col_procesada, na.rm = TRUE)
+        sd_val <- if (n_validos > 1) sd(col_procesada, na.rm = TRUE) else NA
+        min_val <- min(col_procesada, na.rm = TRUE)
+        max_val <- max(col_procesada, na.rm = TRUE)
+        q1_val <- quantile(col_procesada, 0.25, na.rm = TRUE)
+        q3_val <- quantile(col_procesada, 0.75, na.rm = TRUE)
+      } else {
+        media_val <- NA
+        mediana_val <- NA
+        sd_val <- NA
+        min_val <- NA
+        max_val <- NA
+        q1_val <- NA
+        q3_val <- NA
+      }
+      
+      resultados[[var]] <- list(
+        variable = var,
+        tipo = "numérica",
+        tipo_original = class(col_original)[1],
+        n = n_validos,
+        n_faltantes = sum(is.na(col_procesada)),
+        media = media_val,
+        mediana = mediana_val,
+        desv_std = sd_val,
+        min = min_val,
+        max = max_val,
+        q1 = q1_val,
+        q3 = q3_val
+      )
+    } else {
+      if (!is.factor(col_procesada)) {
+        col_procesada <- as.factor(col_procesada)
+      }
+      
+      n_validos <- sum(!is.na(col_procesada))
+      tabla <- table(col_procesada, useNA = "ifany")
+      
+      resultados[[var]] <- list(
+        variable = var,
+        tipo = "categórica",
+        tipo_original = class(col_original)[1],
+        n = n_validos,
+        n_faltantes = sum(is.na(col_procesada)),
+        n_categorias = length(levels(col_procesada)),
+        categorias = levels(col_procesada),
+        frecuencias = as.numeric(tabla),
+        porcentajes = round(100 * prop.table(tabla), 1)
+      )
+    }
+  }
+  
+  return(list(resultados = resultados, error = NULL))
+}
+
+render_univariada <- function(resultados) {
+  
+  if (!is.null(resultados$error)) {
+    return(div(
+      class = "alert alert-warning",
+      resultados$error
+    ))
+  }
+  
+  tablas <- lapply(resultados$resultados, function(res) {
+    
+    if (res$tipo == "numérica") {
+      tagList(
+        h5(strong(res$variable), 
+           " (numérica", 
+           if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original), 
+           ")"),
+        tags$table(
+          class = "table table-sm table-bordered",
+          style = "width: auto;",
+          tags$tbody(
+            tags$tr(tags$td("N válidos"), tags$td(res$n)),
+            tags$tr(tags$td("N faltantes"), tags$td(res$n_faltantes)),
+            tags$tr(tags$td("Media"), tags$td(round(res$media, 2))),
+            tags$tr(tags$td("Mediana"), tags$td(round(res$mediana, 2))),
+            tags$tr(tags$td("Desv. Est."), tags$td(round(res$desv_std, 2))),
+            tags$tr(tags$td("Mínimo"), tags$td(round(res$min, 2))),
+            tags$tr(tags$td("Máximo"), tags$td(round(res$max, 2))),
+            tags$tr(tags$td("Q1"), tags$td(round(res$q1, 2))),
+            tags$tr(tags$td("Q3"), tags$td(round(res$q3, 2)))
+          )
+        ),
+        if (length(res$n_faltantes) == 1 && res$n_faltantes > 0) {
+          div(
+            class = "alert alert-light",
+            style = "font-size: 0.8em; padding: 5px;",
+            sprintf("%.1f%% de datos faltantes", 100 * res$n_faltantes / (res$n + res$n_faltantes))
+          )
+        }
+      )
+    } else {
+      filas <- lapply(seq_along(res$categorias), function(i) {
+        tags$tr(
+          tags$td(as.character(res$categorias[i])),
+          tags$td(res$frecuencias[i]),
+          tags$td(paste0(res$porcentajes[i], "%"))
+        )
+      })
+      
+      tagList(
+        h5(strong(res$variable), 
+           " (categórica", 
+           if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original), 
+           ", ", res$n_categorias, " categorías)"),
+        tags$table(
+          class = "table table-sm table-bordered",
+          style = "width: auto;",
+          tags$thead(
+            tags$tr(
+              tags$th("Categoría"),
+              tags$th("Frecuencia"),
+              tags$th("Porcentaje")
+            )
+          ),
+          tags$tbody(filas)
+        ),
+        if (res$n_faltantes > 0) {
+          div(
+            class = "alert alert-light",
+            style = "font-size: 0.8em; padding: 5px;",
+            sprintf("%.1f%% de datos faltantes", 100 * res$n_faltantes / (res$n + res$n_faltantes))
+          )
+        }
+      )
+    }
+  })
+  
+  tagList(
+    div(
+      class = "alert alert-info",
+      tags$small(
+        "Nota: Las variables se clasifican como 'categóricas' o 'numéricas' basándose en ",
+        "la especificación del YAML o reglas heurísticas. ",
+        "Variables numéricas con pocos valores únicos pueden tratarse como categóricas."
+      )
+    ),
+    tablas
+  )
+}
+
+# =========================
+# FUNCIONES PARA TASAS DE ATAQUE Y ODDS RATIO
+# =========================
+
+convertir_a_logico <- function(x) {
+  if (is.character(x)) {
+    normalizado <- toupper(trimws(x))
+    normalizado <- chartr("ÁÉÍÓÚ", "AEIOU", normalizado)
+    
+    result <- rep(NA, length(normalizado))
+    
+    true_values <- c("VERDADERO", "TRUE", "T", "SI", "SÍ", "YES", "Y", "1", "V", "S")
+    result[normalizado %in% true_values] <- TRUE
+    
+    false_values <- c("FALSO", "FALSE", "F", "NO", "N", "0")
+    result[normalizado %in% false_values] <- FALSE
+    
+    return(result)
+  } else if (is.logical(x)) {
+    return(x)
+  } else if (is.numeric(x)) {
+    result <- rep(NA, length(x))
+    result[x == 1] <- TRUE
+    result[x == 0] <- FALSE
+    return(result)
+  } else if (is.factor(x)) {
+    return(convertir_a_logico(as.character(x)))
+  } else {
+    return(as.logical(x))
+  }
+}
+
+analizar_valores_logicos <- function(x, nombre = "variable") {
+  if (is.character(x)) {
+    valores_unicos <- unique(toupper(trimws(x)))
+    cat(sprintf("\n%s: Valores únicos encontrados (%d):\n", nombre, length(valores_unicos)))
+    print(valores_unicos)
+    
+    convertidos <- convertir_a_logico(x)
+    cat(sprintf("Distribución después de conversión:\n"))
+    print(table(convertidos, useNA = "always"))
+  }
+  return(invisible(NULL))
+}
+
+calcular_tasas_ataque <- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
+  
+  if (debug) {
+    cat("\n=== DEBUGGING TASAS DE ATAQUE ===\n")
+    cat(sprintf("Variable evento: %s\n", variable_evento))
+    if (variable_evento %in% names(datos)) {
+      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
+    }
+  }
+  
+  if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
+    datos <- datos %>% 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %>%
+      filter(participa == TRUE) %>%
+      select(-participa)
+    
+    if (debug) {
+      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
+                  variable_participo, nrow(datos)))
+    }
+  }
+  
+  resultados <- list()
+  
+  for (exposicion in variables_exposicion) {
+    if (!exposicion %in% names(datos)) {
+      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
+      next
+    }
+    
+    if (debug) {
+      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
+      analizar_valores_logicos(datos[[exposicion]], exposicion)
+    }
+    
+    datos_exp <- datos %>%
+      mutate(
+        evento = convertir_a_logico(.data[[variable_evento]]),
+        expos = convertir_a_logico(.data[[exposicion]])
+      ) %>%
+      filter(!is.na(evento) & !is.na(expos))
+    
+    if (debug) {
+      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
+      cat("Tabla 2x2:\n")
+      if (nrow(datos_exp) > 0) {
+        tab <- table(
+          Exposicion = datos_exp$expos,
+          Evento = datos_exp$evento
+        )
+        print(tab)
+      }
+    }
+    
+    if (nrow(datos_exp) == 0) {
+      if (debug) cat("No hay datos válidos para esta exposición\n")
+      next
+    }
+    
+    tab <- table(
+      Exposicion = datos_exp$expos,
+      Evento = datos_exp$evento
+    )
+    
+    if (nrow(tab) >= 2 && ncol(tab) >= 2) {
+      if ("TRUE" %in% rownames(tab) && "FALSE" %in% rownames(tab)) {
+        expuestos_total <- sum(tab["TRUE", ])
+        no_expuestos_total <- sum(tab["FALSE", ])
+        
+        tasa_expuestos <- ifelse(expuestos_total > 0, 
+                                 tab["TRUE", "TRUE"] / expuestos_total, 
+                                 NA)
+        tasa_no_expuestos <- ifelse(no_expuestos_total > 0, 
+                                    tab["FALSE", "TRUE"] / no_expuestos_total, 
+                                    NA)
+        
+        rr <- ifelse(!is.na(tasa_no_expuestos) && tasa_no_expuestos > 0,
+                     tasa_expuestos / tasa_no_expuestos,
+                     NA)
+        
+        dr <- ifelse(!is.na(tasa_expuestos) && !is.na(tasa_no_expuestos),
+                     tasa_expuestos - tasa_no_expuestos,
+                     NA)
+        
+        resultados[[exposicion]] <- list(
+          tabla = tab,
+          n_expuestos = expuestos_total,
+          n_no_expuestos = no_expuestos_total,
+          casos_expuestos = tab["TRUE", "TRUE"],
+          casos_no_expuestos = tab["FALSE", "TRUE"],
+          tasa_expuestos = tasa_expuestos,
+          tasa_no_expuestos = tasa_no_expuestos,
+          riesgo_relativo = rr,
+          diferencia_riesgo = dr,
+          n_total = nrow(datos_exp)
+        )
+      } else {
+        if (debug) cat("Tabla no tiene filas TRUE y FALSE\n")
+      }
+    } else {
+      if (debug) cat(sprintf("Tabla no es 2x2: dimensiones %d x %d\n", nrow(tab), ncol(tab)))
+    }
+  }
+  
+  if (debug) cat(sprintf("\nTotal de exposiciones procesadas: %d\n", length(resultados)))
+  
+  return(resultados)
+}
+
+calcular_odds_ratio <- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
+  
+  if (debug) {
+    cat("\n=== DEBUGGING ODDS RATIO ===\n")
+    cat(sprintf("Variable evento: %s\n", variable_evento))
+    if (variable_evento %in% names(datos)) {
+      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
+    }
+  }
+  
+  if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
+    datos <- datos %>% 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %>%
+      filter(participa == TRUE) %>%
+      select(-participa)
+    
+    if (debug) {
+      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
+                  variable_participo, nrow(datos)))
+    }
+  }
+  
+  resultados <- list()
+  
+  for (exposicion in variables_exposicion) {
+    if (!exposicion %in% names(datos)) {
+      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
+      next
+    }
+    
+    if (debug) {
+      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
+      analizar_valores_logicos(datos[[exposicion]], exposicion)
+    }
+    
+    datos_exp <- datos %>%
+      mutate(
+        evento = convertir_a_logico(.data[[variable_evento]]),
+        expos = convertir_a_logico(.data[[exposicion]])
+      ) %>%
+      filter(!is.na(evento) & !is.na(expos))
+    
+    if (debug) {
+      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
+      cat("Tabla 2x2:\n")
+      if (nrow(datos_exp) > 0) {
+        tab <- table(
+          Exposicion = datos_exp$expos,
+          Evento = datos_exp$evento
+        )
+        print(tab)
+      }
+    }
+    
+    if (nrow(datos_exp) == 0) {
+      if (debug) cat("No hay datos válidos para esta exposición\n")
+      next
+    }
+    
+    tab <- table(
+      Exposicion = datos_exp$expos,
+      Evento = datos_exp$evento
+    )
+    
+    if (nrow(tab) >= 2 && ncol(tab) >= 2) {
+      if ("TRUE" %in% rownames(tab) && "FALSE" %in% rownames(tab)) {
+        a <- tab["TRUE", "TRUE"]
+        b <- tab["TRUE", "FALSE"]
+        c <- tab["FALSE", "TRUE"]
+        d <- tab["FALSE", "FALSE"]
+        
+        or <- ifelse(b > 0 && c > 0, (a * d) / (b * c), NA)
+        
+        if (!is.na(or) && a > 0 && b > 0 && c > 0 && d > 0) {
+          se_log_or <- sqrt(1/a + 1/b + 1/c + 1/d)
+          log_or <- log(or)
+          li <- exp(log_or - 1.96 * se_log_or)
+          ls <- exp(log_or + 1.96 * se_log_or)
+        } else {
+          li <- NA
+          ls <- NA
+        }
+        
+        total <- a + b + c + d
+        if (total > 0) {
+          esperado_a <- (a + b) * (a + c) / total
+          esperado_b <- (a + b) * (b + d) / total
+          esperado_c <- (c + d) * (a + c) / total
+          esperado_d <- (c + d) * (b + d) / total
+          
+          chi2 <- 0
+          if (esperado_a > 0) chi2 <- chi2 + ((a - esperado_a)^2 / esperado_a)
+          if (esperado_b > 0) chi2 <- chi2 + ((b - esperado_b)^2 / esperado_b)
+          if (esperado_c > 0) chi2 <- chi2 + ((c - esperado_c)^2 / esperado_c)
+          if (esperado_d > 0) chi2 <- chi2 + ((d - esperado_d)^2 / esperado_d)
+          
+          p_valor <- pchisq(chi2, df = 1, lower.tail = FALSE)
+        } else {
+          chi2 <- NA
+          p_valor <- NA
+        }
+        
+        resultados[[exposicion]] <- list(
+          tabla = tab,
+          a = a, b = b, c = c, d = d,
+          odds_ratio = or,
+          ic_95_inf = li,
+          ic_95_sup = ls,
+          chi_cuadrado = chi2,
+          p_valor = p_valor,
+          n_total = nrow(datos_exp)
+        )
+      }
+    }
+  }
+  
+  return(resultados)
+}
+
+# =========================
+# FUNCIÓN PARA FOREST PLOT
+# =========================
+
+crear_forest_plot <- function(resultados_or) {
+  if (is.null(resultados_or) || length(resultados_or) == 0) {
+    return(ggplot() + 
+             annotate("text", x = 0.5, y = 0.5, 
+                     label = "No hay datos para crear el forest plot", 
+                     size = 6) +
+             theme_void())
+  }
+  
+  # Crear dataframe para el plot
+  datos_plot <- data.frame(
+    Exposicion = names(resultados_or),
+    OR = sapply(resultados_or, function(x) x$odds_ratio),
+    LI = sapply(resultados_or, function(x) x$ic_95_inf),
+    LS = sapply(resultados_or, function(x) x$ic_95_sup),
+    Significativo = sapply(resultados_or, function(x) {
+      if (is.na(x$ic_95_inf) || is.na(x$ic_95_sup)) return(FALSE)
+      return(x$ic_95_inf > 1 || x$ic_95_sup < 1)
+    })
+  )
+  
+  # Ordenar por OR
+  datos_plot <- datos_plot[order(datos_plot$OR, decreasing = TRUE), ]
+  datos_plot$Exposicion <- factor(datos_plot$Exposicion, 
+                                  levels = rev(datos_plot$Exposicion))
+  
+  # Calcular límites del gráfico
+  min_lim <- min(c(datos_plot$LI, 0.1), na.rm = TRUE) * 0.8
+  max_lim <- max(c(datos_plot$LS, 10), na.rm = TRUE) * 1.2
+  
+  # Crear el forest plot
+  p <- ggplot(datos_plot, aes(x = OR, y = Exposicion)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "red", alpha = 0.7) +
+    geom_errorbarh(aes(xmin = LI, xmax = LS), 
+                   height = 0.2, 
+                   color = ifelse(datos_plot$Significativo, "darkblue", "gray50"),
+                   size = 1) +
+    geom_point(aes(color = Significativo), 
+               size = 3, 
+               shape = 18) +
+    scale_color_manual(values = c("FALSE" = "gray50", "TRUE" = "darkblue")) +
+    scale_x_log10(limits = c(min_lim, max_lim),
+                  breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10),
+                  labels = c("0.1", "0.2", "0.5", "1", "2", "5", "10")) +
+    labs(
+      title = "Forest Plot - Odds Ratios por Exposición",
+      x = "Odds Ratio (escala logarítmica)",
+      y = "Exposición",
+      caption = "Líneas verticales representan intervalos de confianza al 95%\nOR > 1: mayor riesgo, OR < 1: menor riesgo"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      axis.title = element_text(face = "bold"),
+      axis.text.y = element_text(size = 11),
+      panel.grid.major = element_line(color = "gray90"),
+      panel.grid.minor = element_blank(),
+      legend.position = "none",
+      plot.caption = element_text(size = 10, color = "gray50", hjust = 0)
+    ) +
+    geom_text(aes(label = sprintf("%.2f [%.2f-%.2f]", OR, LI, LS),
+                  x = max_lim * 0.9),
+              hjust = 1, size = 3.5, color = "black")
+  
+  return(p)
+}
+
+render_tabla_tasas <- function(resultados_tasas) {
+  if (is.null(resultados_tasas) || length(resultados_tasas) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      tags$h5("No se pudieron calcular tasas de ataque"),
+      tags$p("Posibles causas:"),
+      tags$ul(
+        tags$li("Las variables no contienen valores lógicos (VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0)"),
+        tags$li("Faltan datos en las variables de evento o exposición"),
+        tags$li("Las tablas 2x2 no pudieron construirse (no hay suficiente variación en los datos)"),
+        tags$li("Verifique que las columnas en el CSV coincidan con las especificadas en el YAML")
+      ),
+      tags$p("Tip: Las variables lógicas deben usar valores como: VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0")
+    ))
+  }
+  
+  tablas <- lapply(names(resultados_tasas), function(exposicion) {
+    res <- resultados_tasas[[exposicion]]
+    
+    tagList(
+      h5(strong(exposicion), sprintf(" (n=%d)", res$n_total)),
+      tags$table(
+        class = "table table-sm table-bordered",
+        style = "width: auto; margin-bottom: 20px;",
+        tags$thead(
+          tags$tr(
+            tags$th(""),
+            tags$th("Enfermos"),
+            tags$th("Total"),
+            tags$th("Tasa de ataque")
+          )
+        ),
+        tags$tbody(
+          tags$tr(
+            tags$td(strong("Expuestos")),
+            tags$td(res$casos_expuestos),
+            tags$td(res$n_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_expuestos), 
+                          sprintf("%.1f%%", res$tasa_expuestos * 100), 
+                          "N/A"))
+          ),
+          tags$tr(
+            tags$td(strong("No expuestos")),
+            tags$td(res$casos_no_expuestos),
+            tags$td(res$n_no_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_no_expuestos), 
+                          sprintf("%.1f%%", res$tasa_no_expuestos * 100), 
+                          "N/A"))
+          ),
+          tags$tr(
+            tags$td(strong("Riesgo Relativo (RR)")),
+            tags$td(colspan = "3", 
+                   ifelse(!is.na(res$riesgo_relativo), 
+                          sprintf("%.2f", res$riesgo_relativo), 
+                          "No calculable"))
+          ),
+          tags$tr(
+            tags$td(strong("Diferencia de Riesgo")),
+            tags$td(colspan = "3", 
+                   ifelse(!is.na(res$diferencia_riesgo), 
+                          sprintf("%.3f", res$diferencia_riesgo), 
+                          "No calculable"))
+          )
+        )
+      )
+    )
+  })
+  
+  tagList(tablas)
+}
+
+render_tabla_or <- function(resultados_or) {
+  if (is.null(resultados_or) || length(resultados_or) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      "No se pudieron calcular odds ratios"
+    ))
+  }
+  
+  filas <- lapply(names(resultados_or), function(exposicion) {
+    res <- resultados_or[[exposicion]]
+    
+    tags$tr(
+      tags$td(strong(exposicion)),
+      tags$td(sprintf("%.2f", res$odds_ratio)),
+      tags$td(ifelse(!is.na(res$ic_95_inf), sprintf("[%.2f-%.2f]", res$ic_95_inf, res$ic_95_sup), "N/A")),
+      tags$td(ifelse(!is.na(res$chi_cuadrado), sprintf("%.2f", res$chi_cuadrado), "N/A")),
+      tags$td(ifelse(!is.na(res$p_valor), 
+                    ifelse(res$p_valor < 0.001, "<0.001", sprintf("%.3f", res$p_valor)), 
+                    "N/A"))
+    )
+  })
+  
+  tagList(
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Exposición"),
+          tags$th("Odds Ratio"),
+          tags$th("IC 95%"),
+          tags$th("Chi²"),
+          tags$th("Valor p")
+        )
+      ),
+      tags$tbody(filas)
+    ),
+    
+    div(
+      class = "alert alert-info mt-3",
+      tags$small(
+        strong("Interpretación:"),
+        "OR > 1: asociación positiva (mayor riesgo), OR < 1: asociación negativa (menor riesgo), ",
+        "OR = 1: no asociación. IC 95% que no incluye 1 indica significancia estadística."
+      )
+    )
+  )
+}
+
+# =========================
+# UI
+# =========================
+
+ui <- fluidPage(
+  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  
+  titlePanel(""),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 3,
+      fileInput("datos", "Subir CSV", accept = c(".csv", ".txt")),
+      fileInput("yaml", "Subir YAML", accept = c(".yaml", ".yml")),
+      checkboxInput("debug", "Modo debug", value = FALSE),
+      actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
+      hr(),
+      h5("Estado de carga:"),
+      verbatimTextOutput("debug_info"),
+      verbatimTextOutput("debug_tipos")
+    ),
+    
+    mainPanel(
+      width = 9,
+      uiOutput("mensajes"),
+      uiOutput("resultado")
+    )
+  )
+)
+
+# =========================
+# SERVER
+# =========================
+
+server <- function(input, output, session) {
+  
+  estado <- reactiveValues(
+    datos = NULL,
+    solicitud = NULL,
+    ejecutado = FALSE,
+    resultados_or = NULL  # Para almacenar resultados de OR
+  )
+  
+  observeEvent(input$datos, {
+    tryCatch({
+      estado$datos <- read_delim(input$datos$datapath, delim = ";", 
+                                locale = locale(decimal_mark = ","),
+                                show_col_types = FALSE)
+      showNotification("✓ Datos CSV cargados", type = "message")
+    }, error = function(e) {
+      tryCatch({
+        estado$datos <- read_csv(input$datos$datapath, show_col_types = FALSE)
+        showNotification("✓ Datos CSV cargados", type = "message")
+      }, error = function(e2) {
+        showNotification(paste("Error al leer CSV:", e2$message), type = "error")
+        estado$datos <- NULL
+      })
+    })
+  })
+  
+  observeEvent(input$yaml, {
+    tryCatch({
+      estado$solicitud <- read_yaml(input$yaml$datapath)
+      showNotification("✓ YAML cargado", type = "message")
+    }, error = function(e) {
+      showNotification(paste("Error al leer YAML:", e$message), type = "error")
+      estado$solicitud <- NULL
+    })
+  })
+  
+  errores_yaml <- reactive({
+    req(estado$solicitud)
+    
+    errores <- c()
+    
+    if (is.null(estado$solicitud$definicion_problema)) {
+      errores <- c(errores, "Falta sección 'definicion_problema'")
+    } else if (is.null(estado$solicitud$definicion_problema$evento)) {
+      errores <- c(errores, "Falta 'definicion_problema$evento'")
+    }
+    
+    if (is.null(estado$solicitud$variables)) {
+      errores <- c(errores, "Falta sección 'variables'")
+    }
+    
+    errores
+  })
+  
+  errores_mapeo <- reactive({
+    req(estado$datos, estado$solicitud)
+    
+    if (is.null(estado$solicitud$variables)) {
+      return(c())
+    }
+    
+    vars_yaml <- estado$solicitud$variables
+    vars_datos <- names(estado$datos)
+    errores <- c()
+    
+    if (!is.null(vars_yaml$sociodemograficas)) {
+      for (var in vars_yaml$sociodemograficas) {
+        
+        var_nombre <- if (is.list(var) && "nombre" %in% names(var)) {
+          var$nombre
+        } else {
+          var
+        }
+        
+        if (!var_nombre %in% vars_datos) {
+          errores <- c(
+            errores,
+            paste("Variable sociodemográfica no encontrada:", var_nombre)
+          )
+        }
+      }
+    }
+    
+    if (!is.null(vars_yaml$variable_tiempo_inicio)) {
+      var_inicio <- vars_yaml$variable_tiempo_inicio
+      if (!var_inicio %in% vars_datos) {
+        errores <- c(errores, paste("Variable de tiempo no encontrada:", var_inicio))
+      }
+    }
+    
+    if (!is.null(vars_yaml$evento)) {
+      var_evento <- vars_yaml$evento
+      if (!var_evento %in% vars_datos) {
+        errores <- c(errores, paste("Variable de evento no encontrada:", var_evento))
+      }
+    }
+    
+    if (!is.null(vars_yaml$exposicion)) {
+      for (var in vars_yaml$exposicion) {
+        if (!var %in% vars_datos) {
+          errores <- c(errores, paste("Variable de exposición no encontrada:", var))
+        }
+      }
+    }
+    
+    if (!is.null(vars_yaml$participo)) {
+      var_participo <- vars_yaml$participo
+      if (!var_participo %in% vars_datos) {
+        errores <- c(errores, paste("Variable de participación no encontrada:", var_participo))
+      }
+    }
+    
+    errores
+  })
+  
+  output$debug_tipos <- renderPrint({
+    req(estado$datos, estado$solicitud)
+    
+    datos <- estado$datos
+    vars_sociodem <- estado$solicitud$variables$sociodemograficas
+    
+    cat("=== DEBUG: TIPOS DE VARIABLES ===\n")
+    
+    for (var in vars_sociodem) {
+      if (is.list(var) && "nombre" %in% names(var)) {
+        var_nombre <- var$nombre
+        var_tipo <- var$tipo
+      } else {
+        var_nombre <- var
+        var_tipo <- "No especificado"
+      }
+      
+      if (var_nombre %in% names(datos)) {
+        col <- datos[[var_nombre]]
+        cat(sprintf("%s:\n", var_nombre))
+        cat(sprintf("  Tipo YAML: %s\n", var_tipo))
+        cat(sprintf("  Tipo R: %s\n", class(col)))
+        cat(sprintf("  Valores únicos: %d\n", length(unique(na.omit(col)))))
+        cat(sprintf("  Ejemplos: %s\n", paste(head(unique(col), 5), collapse=", ")))
+        cat("  ---\n")
+      }
+    }
+  })
+  
+  informe <- eventReactive(input$ejecutar, {
+    
+    if (is.null(estado$datos)) {
+      return(list(error = "Debe cargar un archivo CSV"))
+    }
+    
+    if (is.null(estado$solicitud)) {
+      return(list(error = "Debe cargar un archivo YAML"))
+    }
+    
+    err_yaml <- errores_yaml()
+    if (length(err_yaml) > 0) {
+      return(list(error = paste("Errores en YAML:\n", colapsar_errores(err_yaml))))
+    }
+    
+    err_mapeo <- errores_mapeo()
+    if (length(err_mapeo) > 0) {
+      return(list(error = paste("Errores de mapeo:\n", colapsar_errores(err_mapeo))))
+    }
+    
+    productos_esperados <- estado$solicitud$productos
+    productos <- character(0)
+    
+    if (!is.null(productos_esperados) && length(productos_esperados) > 0) {
+      productos <- unlist(productos_esperados, use.names = FALSE)
+    }
+    
+    estado$ejecutado <- TRUE
+    
+    list(
+      datos = estado$datos,
+      vars = estado$solicitud$variables,
+      evento = estado$solicitud$definicion_problema$evento,
+      productos = productos,
+      error = NULL
+    )
+  })
+  
+  output$mensajes <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) {
+      div(
+        class = "alert alert-danger",
+        role = "alert",
+        h4(class = "alert-heading", "❌ Error"),
+        HTML(gsub("\n", "<br>", info$error))
+      )
+    } else {
+      div(
+        class = "alert alert-success",
+        role = "alert",
+        "✓ Informe generado correctamente"
+      )
+    }
+  })
+  
+  output$resultado <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) {
+      return(NULL)
+    }
+    
+    ev <- info$evento
+    productos <- info$productos
+    
+    elementos <- tagList(
+      hr(),
+      h2(ev$nombre, style = "color: #2c3e50;"),
+      h4("Definición de caso"),
+      p(ev$definicion_caso, style = "margin-left: 15px;"),
+      h4("Población, lugar y período"),
+      tags$ul(
+        tags$li(strong("Población: "), ev$poblacion_en_riesgo),
+        tags$li(strong("Lugar: "), ev$lugar),
+        tags$li(strong("Período: "), ev$periodo_tiempo)
+      ),
+      hr()
+    )
+    
+    if (length(productos) > 0 && "descripcion_univariada" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Descripción univariada", style = "color: #34495e;"),
+        uiOutput("tabla_univariada"),
+        hr()
+      )
+    }
+    
+    if (length(productos) > 0 && "tasas_ataque_por_exposicion" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Tasas de ataque por exposición", style = "color: #34495e;"),
+        p("Análisis de tasas de ataque entre expuestos y no expuestos a cada alimento:"),
+        uiOutput("tabla_tasas"),
+        hr()
+      )
+    }
+    
+    if (length(productos) > 0 && "odds_ratio_por_exposicion" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Odds ratio por exposición", style = "color: #34495e;"),
+        p("Asociación entre exposición a alimentos y enfermedad (odds ratio):"),
+        uiOutput("tabla_or"),
+        h3("Forest Plot de Odds Ratios", style = "color: #34495e;"),
+        p("Visualización gráfica de los odds ratios con intervalos de confianza:"),
+        plotOutput("forest_plot", height = "600px"),
+        hr()
+      )
+    }
+    
+    if (length(productos) > 0 && "curva_epidemica" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Curva epidémica", style = "color: #34495e;"),
+        plotOutput("plot_curva", height = "450px"),
+        hr()
+      )
+    }
+    
+    return(elementos)
+  })
+  
+  output$tabla_univariada <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars_sociodem <- info$vars$sociodemograficas
+    
+    if (is.null(vars_sociodem)) {
+      return(div(
+        class = "alert alert-warning",
+        "No se definieron variables sociodemográficas en el YAML"
+      ))
+    }
+    
+    desc <- generar_descripcion_univariada(info$datos, vars_sociodem)
+    
+    render_univariada(desc)
+  })
+  
+  output$tabla_tasas <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars <- info$vars
+    
+    if (is.null(vars$evento) || is.null(vars$exposicion)) {
+      return(div(
+        class = "alert alert-warning",
+        "Faltan definiciones de evento o exposiciones en el YAML"
+      ))
+    }
+    
+    variable_evento <- vars$evento
+    variables_exposicion <- vars$exposicion
+    variable_participo <- vars$participo
+    
+    if (!variable_evento %in% names(info$datos)) {
+      return(div(
+        class = "alert alert-warning",
+        paste("Variable de evento no encontrada:", variable_evento)
+      ))
+    }
+    
+    if (input$debug) {
+      cat("\n=== DEBUG TASAS DE ATAQUE ===\n")
+      cat("Variable evento:", variable_evento, "\n")
+      cat("Variable participo:", variable_participo, "\n")
+      cat("Exposiciones:", paste(variables_exposicion, collapse=", "), "\n")
+      
+      datos <- info$datos
+      cat("\nValores únicos en", variable_evento, ":\n")
+      print(table(datos[[variable_evento]], useNA = "always"))
+      
+      if (!is.null(variable_participo)) {
+        cat("\nValores únicos en", variable_participo, ":\n")
+        print(table(datos[[variable_participo]], useNA = "always"))
+      }
+    }
+    
+    resultados_tasas <- calcular_tasas_ataque(
+      datos = info$datos,
+      variable_evento = variable_evento,
+      variables_exposicion = variables_exposicion,
+      variable_participo = variable_participo,
+      debug = input$debug
+    )
+    
+    render_tabla_tasas(resultados_tasas)
+  })
+  
+  output$tabla_or <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars <- info$vars
+    
+    if (is.null(vars$evento) || is.null(vars$exposicion)) {
+      return(div(
+        class = "alert alert-warning",
+        "Faltan definiciones de evento o exposiciones en el YAML"
+      ))
+    }
+    
+    variable_evento <- vars$evento
+    variables_exposicion <- vars$exposicion
+    variable_participo <- vars$participo
+    
+    if (!variable_evento %in% names(info$datos)) {
+      return(div(
+        class = "alert alert-warning",
+        paste("Variable de evento no encontrada:", variable_evento)
+      ))
+    }
+    
+    if (input$debug) {
+      cat("\n=== DEBUG ODDS RATIO ===\n")
+      cat("Variable evento:", variable_evento, "\n")
+      cat("Variable participo:", variable_participo, "\n")
+      cat("Exposiciones:", paste(variables_exposicion, collapse=", "), "\n")
+      
+      datos <- info$datos
+      cat("\nValores únicos en", variable_evento, ":\n")
+        print(table(datos[[variable_evento]], useNA = "always"))
+      
+      if (!is.null(variable_participo)) {
+        cat("\nValores únicos en", variable_participo, ":\n")
+        print(table(datos[[variable_participo]], useNA = "always"))
+      }
+      
+      for (exp in variables_exposicion) {
+        if (exp %in% names(datos)) {
+          cat("\n--- Exposición:", exp, "---\n")
+          cat("Valores originales:\n")
+          print(table(datos[[exp]], useNA = "always"))
+          
+          convertidos <- convertir_a_logico(datos[[exp]])
+          cat("Valores convertidos:\n")
+          print(table(convertidos, useNA = "always"))
+        }
+      }
+    }
+    
+    # Calcular odds ratio y almacenar en estado reactivo
+    resultados_or <- calcular_odds_ratio(
+      datos = info$datos,
+      variable_evento = variable_evento,
+      variables_exposicion = variables_exposicion,
+      variable_participo = variable_participo,
+      debug = input$debug
+    )
+    
+    # Almacenar resultados para el forest plot
+    estado$resultados_or <- resultados_or
+    
+    if (input$debug && length(resultados_or) > 0) {
+      cat("\n=== RESULTADOS ODDS RATIO ===\n")
+      for (exp in names(resultados_or)) {
+        cat("\nExposición:", exp, "\n")
+        print(resultados_or[[exp]])
+      }
+    }
+    
+    render_tabla_or(resultados_or)
+  })
+  
+  # =========================
+  # FOREST PLOT
+  # =========================
+  
+  output$forest_plot <- renderPlot({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    # Verificar que se solicitó el producto
+    if (!"odds_ratio_por_exposicion" %in% info$productos) {
+      return(NULL)
+    }
+    
+    # Usar los resultados almacenados
+    if (is.null(estado$resultados_or) || length(estado$resultados_or) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, 
+                       label = "No hay datos de odds ratios para crear el forest plot", 
+                       size = 6) +
+               theme_void())
+    }
+    
+    # Crear el forest plot
+    crear_forest_plot(estado$resultados_or)
+  })
+  
+  output$plot_curva <- renderPlot({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) {
+      return(NULL)
+    }
+    
+    if (!"curva_epidemica" %in% info$productos) {
+      return(NULL)
+    }
+    
+    datos <- info$datos
+    var_inicio <- info$vars$variable_tiempo_inicio
+    
+    if (!var_inicio %in% names(datos)) {
+      plot.new()
+      text(0.5, 0.5, 
+           paste("Error: columna", var_inicio, "no encontrada"), 
+           cex = 1.2, col = "red")
+      return()
+    }
+    
+    datos_plot <- datos %>%
+      mutate(tiempo = as.numeric(.data[[var_inicio]])) %>%
+      filter(!is.na(tiempo))
+    
+    if (nrow(datos_plot) == 0) {
+      plot.new()
+      text(0.5, 0.5, 
+           "No hay datos válidos para graficar", 
+           cex = 1.2, col = "gray50")
+      return()
+    }
+    
+    ggplot(datos_plot, aes(x = tiempo)) +
+      geom_histogram(binwidth = 1, fill = "steelblue", color = "white", alpha = 0.8) +
+      labs(
+        title = "Curva epidémica",
+        x = "Tiempo desde inicio de síntomas",
+        y = "Número de casos"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        panel.grid.minor = element_blank()
+      )
+  })
+  
+  output$debug_info <- renderText({
+    paste0(
+      "CSV: ", if(is.null(estado$datos)) "❌" else "✓",
+      "\nYAML: ", if(is.null(estado$solicitud)) "❌" else "✓",
+      "\nFilas: ", if(!is.null(estado$datos)) nrow(estado$datos) else "0",
+      "\nColumnas: ", if(!is.null(estado$datos)) paste(names(estado$datos), collapse=", ") else "N/A"
+    )
+  })
+}
+shinyApp(ui, server)
+``` 
+

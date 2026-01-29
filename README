@@ -1,0 +1,24 @@
+# Análisis de Brotes Epidemiológicos
+
+Aplicación Shiny para análisis de brotes epidemiológicos con:
+- Descripción univariada
+- Tasas de ataque
+- Odds Ratios
+- Forest Plot
+- Curva epidémica
+
+## Uso
+
+1. Sube un archivo CSV con los datos
+2. Sube un archivo YAML con la configuración
+3. Haz clic en "Generar informe"
+
+## Ejemplo
+
+Ver la aplicación en funcionamiento: datos-ine.io/brote
+
+## Archivos de ejemplo
+
+Incluye:
+- `datos_ejemplo.csv`
+- `config_ejemplo.yaml`
