@@ -1,6 +1,16 @@
 ---
 title: "Análisis de brotes epidemiológicos"
-format: html
+format: 
+  html:
+    css: custom.css
+    toc: false
+    toc-depth: 2
+    number-sections: true
+    theme: flatly
+    margin-left: "0cm"
+    margin-right: "0cm"
+    margin-top: "0cm"
+    margin-bottom: "0cm"
 engine: knitr
 shinylive:
   packages:
@@ -25,6 +35,14 @@ filters:
 ```{shinylive-r}
 #| standalone: true
 #| viewerHeight: 700
+#| viewerWidth: 1500  # Aumenta este valor
+#| layout: fill
+#| fig-width: 100
+#| fig-height: 700
+#| code-fold: true
+#| echo: false
+#| warning: false
+#| message: false
 
 if (!requireNamespace("munsell", quietly = TRUE)) {
   install.packages("munsell", repos = "https://webr.r-wasm.org")

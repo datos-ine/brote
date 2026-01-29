@@ -34,7 +34,7 @@ ul.task-list li input[type="checkbox"] {
 <link href="index_files/libs/quarto-html/quarto-syntax-highlighting-7b89279ff1a6dce999919e0e67d4d9ec.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="index_files/libs/bootstrap/bootstrap.min.js"></script>
 <link href="index_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
-<link href="index_files/libs/bootstrap/bootstrap-9e3ffae467580fdb927a41352e75a2e0.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<link href="index_files/libs/bootstrap/bootstrap-bf71b591a9d31b6585383f83b4bcc134.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
 <meta name="shinylive:serviceworker_dir" content=".">
 <script src="index_files/libs/quarto-contrib/shinylive-0.9.1/shinylive/load-shinylive-sw.js" type="module"></script>
 <script src="index_files/libs/quarto-contrib/shinylive-0.9.1/shinylive/run-python-blocks.js" type="module"></script>
@@ -42,6 +42,7 @@ ul.task-list li input[type="checkbox"] {
 <link href="index_files/libs/quarto-contrib/shinylive-quarto-css/shinylive-quarto.css" rel="stylesheet">
 
 
+<link rel="stylesheet" href="custom.css">
 </head>
 
 <body class="fullcontent quarto-light">
@@ -74,6 +75,14 @@ ul.task-list li input[type="checkbox"] {
 #|   Please set `embed-resources: false` in your metadata.
 #| standalone: true
 #| viewerHeight: 700
+#| viewerWidth: 1500  # Aumenta este valor
+#| layout: fill
+#| fig-width: 100
+#| fig-height: 700
+#| code-fold: true
+#| echo: false
+#| warning: false
+#| message: false
 
 if (!requireNamespace("munsell", quietly = TRUE)) {
   install.packages("munsell", repos = "https://webr.r-wasm.org")
