@@ -1,0 +1,1769 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.25">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Análisis de brotes epidemiológicos</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="index_files/libs/clipboard/clipboard.min.js"></script>
+<script src="index_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="index_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="index_files/libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="index_files/libs/quarto-html/popper.min.js"></script>
+<script src="index_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="index_files/libs/quarto-html/anchor.min.js"></script>
+<link href="index_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="index_files/libs/quarto-html/quarto-syntax-highlighting-7b89279ff1a6dce999919e0e67d4d9ec.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="index_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="index_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="index_files/libs/bootstrap/bootstrap-9e3ffae467580fdb927a41352e75a2e0.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+<meta name="shinylive:serviceworker_dir" content=".">
+<script src="index_files/libs/quarto-contrib/shinylive-0.9.1/shinylive/load-shinylive-sw.js" type="module"></script>
+<script src="index_files/libs/quarto-contrib/shinylive-0.9.1/shinylive/run-python-blocks.js" type="module"></script>
+<link href="index_files/libs/quarto-contrib/shinylive-0.9.1/shinylive/shinylive.css" rel="stylesheet">
+<link href="index_files/libs/quarto-contrib/shinylive-quarto-css/shinylive-quarto.css" rel="stylesheet">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Análisis de brotes epidemiológicos</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<pre class="shinylive-r" data-engine="r"><code>#| '!! shinylive warning !!': |
+#|   shinylive does not work in self-contained HTML documents.
+#|   Please set `embed-resources: false` in your metadata.
+#| standalone: true
+#| viewerHeight: 700
+
+if (!requireNamespace("munsell", quietly = TRUE)) {
+  install.packages("munsell", repos = "https://webr.r-wasm.org")
+}
+library(munsell, character.only = TRUE)
+
+library(shiny)
+library(bslib)
+library(htmltools)
+library(yaml)
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+# =========================
+# FUNCIONES AUXILIARES
+# =========================
+
+colapsar_errores &lt;- function(x) {
+  if (length(x) == 0) return("")
+  paste("•", x, collapse = "\n")
+}
+
+determinar_tipo_variable &lt;- function(col, tipo_especificado = NA) {
+  if (length(tipo_especificado) &gt; 1) {
+    tipo_especificado &lt;- tipo_especificado[1]
+  }
+  
+  if (length(tipo_especificado) &gt;= 1 &amp;&amp; !is.na(tipo_especificado[1])) {
+    if (tipo_especificado[1] == "cuantitativa") return("cuantitativa")
+    if (tipo_especificado[1] == "cualitativa") return("cualitativa")
+  }
+  
+  if (!is.numeric(col)) return("cualitativa")
+  
+  valores_no_na &lt;- col[!is.na(col)]
+  if (length(valores_no_na) == 0) return("cualitativa")
+  
+  n_unicos &lt;- length(unique(valores_no_na))
+  if (n_unicos &lt;= 10) return("cualitativa")
+  
+  return("cuantitativa")
+}
+
+# =========================
+# FUNCIÓN: DESCRIPCIÓN UNIVARIADA 
+# =========================
+
+generar_descripcion_univariada &lt;- function(datos, variables_sociodem) {
+  
+  if (is.null(variables_sociodem) || length(variables_sociodem) == 0) {
+    return(list(error = "No se definieron variables sociodemográficas"))
+  }
+  
+  es_formato_nuevo &lt;- FALSE
+  nombres_vars &lt;- character(0)
+  tipos_vars &lt;- character(0)
+  
+  if (is.list(variables_sociodem) &amp;&amp; length(variables_sociodem) &gt; 0) {
+    primer_elemento &lt;- variables_sociodem[[1]]
+    
+    if (is.list(primer_elemento) &amp;&amp; 
+        "nombre" %in% names(primer_elemento) &amp;&amp; 
+        "tipo" %in% names(primer_elemento)) {
+      es_formato_nuevo &lt;- TRUE
+      
+      nombres_vars &lt;- sapply(variables_sociodem, function(x) x$nombre)
+      tipos_vars &lt;- sapply(variables_sociodem, function(x) {
+        tipo &lt;- x$tipo
+        if (length(tipo) &gt; 1) tipo &lt;- tipo[1]
+        return(tipo)
+      })
+    } else {
+      nombres_vars &lt;- as.character(variables_sociodem)
+      tipos_vars &lt;- rep(NA_character_, length(nombres_vars))
+    }
+  } else {
+    nombres_vars &lt;- as.character(variables_sociodem)
+    tipos_vars &lt;- rep(NA, length(nombres_vars))
+  }
+  
+  vars_faltantes &lt;- setdiff(nombres_vars, names(datos))
+  if (length(vars_faltantes) &gt; 0) {
+    return(list(error = paste("Variables no encontradas:", paste(vars_faltantes, collapse = ", "))))
+  }
+  
+  resultados &lt;- list()
+  
+  for (i in seq_along(nombres_vars)) {
+    var &lt;- nombres_vars[i]
+    tipo_especificado &lt;- if (es_formato_nuevo) tipos_vars[i] else NA
+    col_original &lt;- datos[[var]]
+    
+    tipo_final &lt;- determinar_tipo_variable(col_original, tipo_especificado)
+    
+    col_procesada &lt;- col_original
+    
+    if (tipo_final == "cualitativa") {
+      col_procesada &lt;- as.factor(col_procesada)
+    } else if (tipo_final == "cuantitativa") {
+      if (!is.numeric(col_procesada)) {
+        col_numerica &lt;- suppressWarnings(as.numeric(as.character(col_procesada)))
+        
+        n_converted &lt;- sum(!is.na(col_numerica))
+        n_total &lt;- sum(!is.na(col_procesada))
+        
+        if (n_total &gt; 0) {
+          proporcion_convertida &lt;- n_converted / n_total
+          
+          if (proporcion_convertida &lt; 0.5) {
+            tipo_final &lt;- "cualitativa"
+            col_procesada &lt;- as.factor(col_original)
+          } else {
+            col_procesada &lt;- col_numerica
+          }
+        } else {
+          tipo_final &lt;- "cualitativa"
+          col_procesada &lt;- as.factor(col_original)
+        }
+      }
+    }
+    
+    if (tipo_final == "cuantitativa") {
+      n_validos &lt;- sum(!is.na(col_procesada))
+      
+      if (n_validos &gt; 0) {
+        media_val &lt;- mean(col_procesada, na.rm = TRUE)
+        mediana_val &lt;- median(col_procesada, na.rm = TRUE)
+        sd_val &lt;- if (n_validos &gt; 1) sd(col_procesada, na.rm = TRUE) else NA
+        min_val &lt;- min(col_procesada, na.rm = TRUE)
+        max_val &lt;- max(col_procesada, na.rm = TRUE)
+        q1_val &lt;- quantile(col_procesada, 0.25, na.rm = TRUE)
+        q3_val &lt;- quantile(col_procesada, 0.75, na.rm = TRUE)
+      } else {
+        media_val &lt;- NA
+        mediana_val &lt;- NA
+        sd_val &lt;- NA
+        min_val &lt;- NA
+        max_val &lt;- NA
+        q1_val &lt;- NA
+        q3_val &lt;- NA
+      }
+      
+      resultados[[var]] &lt;- list(
+        variable = var,
+        tipo = "numérica",
+        tipo_original = class(col_original)[1],
+        n = n_validos,
+        n_faltantes = sum(is.na(col_procesada)),
+        media = media_val,
+        mediana = mediana_val,
+        desv_std = sd_val,
+        min = min_val,
+        max = max_val,
+        q1 = q1_val,
+        q3 = q3_val
+      )
+    } else {
+      if (!is.factor(col_procesada)) {
+        col_procesada &lt;- as.factor(col_procesada)
+      }
+      
+      n_validos &lt;- sum(!is.na(col_procesada))
+      tabla &lt;- table(col_procesada, useNA = "ifany")
+      
+      resultados[[var]] &lt;- list(
+        variable = var,
+        tipo = "categórica",
+        tipo_original = class(col_original)[1],
+        n = n_validos,
+        n_faltantes = sum(is.na(col_procesada)),
+        n_categorias = length(levels(col_procesada)),
+        categorias = levels(col_procesada),
+        frecuencias = as.numeric(tabla),
+        porcentajes = round(100 * prop.table(tabla), 1)
+      )
+    }
+  }
+  
+  return(list(resultados = resultados, error = NULL))
+}
+
+render_univariada &lt;- function(resultados) {
+  
+  if (!is.null(resultados$error)) {
+    return(div(
+      class = "alert alert-warning",
+      resultados$error
+    ))
+  }
+  
+  tablas &lt;- lapply(resultados$resultados, function(res) {
+    
+    if (res$tipo == "numérica") {
+      tagList(
+        h5(strong(res$variable), 
+           " (numérica", 
+           if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original), 
+           ")"),
+        tags$table(
+          class = "table table-sm table-bordered",
+          style = "width: auto;",
+          tags$tbody(
+            tags$tr(tags$td("N válidos"), tags$td(res$n)),
+            tags$tr(tags$td("N faltantes"), tags$td(res$n_faltantes)),
+            tags$tr(tags$td("Media"), tags$td(round(res$media, 2))),
+            tags$tr(tags$td("Mediana"), tags$td(round(res$mediana, 2))),
+            tags$tr(tags$td("Desv. Est."), tags$td(round(res$desv_std, 2))),
+            tags$tr(tags$td("Mínimo"), tags$td(round(res$min, 2))),
+            tags$tr(tags$td("Máximo"), tags$td(round(res$max, 2))),
+            tags$tr(tags$td("Q1"), tags$td(round(res$q1, 2))),
+            tags$tr(tags$td("Q3"), tags$td(round(res$q3, 2)))
+          )
+        ),
+        if (length(res$n_faltantes) == 1 &amp;&amp; res$n_faltantes &gt; 0) {
+          div(
+            class = "alert alert-light",
+            style = "font-size: 0.8em; padding: 5px;",
+            sprintf("%.1f%% de datos faltantes", 100 * res$n_faltantes / (res$n + res$n_faltantes))
+          )
+        }
+      )
+    } else {
+      filas &lt;- lapply(seq_along(res$categorias), function(i) {
+        tags$tr(
+          tags$td(as.character(res$categorias[i])),
+          tags$td(res$frecuencias[i]),
+          tags$td(paste0(res$porcentajes[i], "%"))
+        )
+      })
+      
+      tagList(
+        h5(strong(res$variable), 
+           " (categórica", 
+           if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original), 
+           ", ", res$n_categorias, " categorías)"),
+        tags$table(
+          class = "table table-sm table-bordered",
+          style = "width: auto;",
+          tags$thead(
+            tags$tr(
+              tags$th("Categoría"),
+              tags$th("Frecuencia"),
+              tags$th("Porcentaje")
+            )
+          ),
+          tags$tbody(filas)
+        ),
+        if (res$n_faltantes &gt; 0) {
+          div(
+            class = "alert alert-light",
+            style = "font-size: 0.8em; padding: 5px;",
+            sprintf("%.1f%% de datos faltantes", 100 * res$n_faltantes / (res$n + res$n_faltantes))
+          )
+        }
+      )
+    }
+  })
+  
+  tagList(
+    div(
+      class = "alert alert-info",
+      tags$small(
+        "Nota: Las variables se clasifican como 'categóricas' o 'numéricas' basándose en ",
+        "la especificación del YAML o reglas heurísticas. ",
+        "Variables numéricas con pocos valores únicos pueden tratarse como categóricas."
+      )
+    ),
+    tablas
+  )
+}
+
+# =========================
+# FUNCIONES PARA TASAS DE ATAQUE Y ODDS RATIO
+# =========================
+
+convertir_a_logico &lt;- function(x) {
+  if (is.character(x)) {
+    normalizado &lt;- toupper(trimws(x))
+    normalizado &lt;- chartr("ÁÉÍÓÚ", "AEIOU", normalizado)
+    
+    result &lt;- rep(NA, length(normalizado))
+    
+    true_values &lt;- c("VERDADERO", "TRUE", "T", "SI", "SÍ", "YES", "Y", "1", "V", "S")
+    result[normalizado %in% true_values] &lt;- TRUE
+    
+    false_values &lt;- c("FALSO", "FALSE", "F", "NO", "N", "0")
+    result[normalizado %in% false_values] &lt;- FALSE
+    
+    return(result)
+  } else if (is.logical(x)) {
+    return(x)
+  } else if (is.numeric(x)) {
+    result &lt;- rep(NA, length(x))
+    result[x == 1] &lt;- TRUE
+    result[x == 0] &lt;- FALSE
+    return(result)
+  } else if (is.factor(x)) {
+    return(convertir_a_logico(as.character(x)))
+  } else {
+    return(as.logical(x))
+  }
+}
+
+analizar_valores_logicos &lt;- function(x, nombre = "variable") {
+  if (is.character(x)) {
+    valores_unicos &lt;- unique(toupper(trimws(x)))
+    cat(sprintf("\n%s: Valores únicos encontrados (%d):\n", nombre, length(valores_unicos)))
+    print(valores_unicos)
+    
+    convertidos &lt;- convertir_a_logico(x)
+    cat(sprintf("Distribución después de conversión:\n"))
+    print(table(convertidos, useNA = "always"))
+  }
+  return(invisible(NULL))
+}
+
+calcular_tasas_ataque &lt;- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
+  
+  if (debug) {
+    cat("\n=== DEBUGGING TASAS DE ATAQUE ===\n")
+    cat(sprintf("Variable evento: %s\n", variable_evento))
+    if (variable_evento %in% names(datos)) {
+      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
+    }
+  }
+  
+  if (!is.null(variable_participo) &amp;&amp; variable_participo %in% names(datos)) {
+    datos &lt;- datos %&gt;% 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %&gt;%
+      filter(participa == TRUE) %&gt;%
+      select(-participa)
+    
+    if (debug) {
+      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
+                  variable_participo, nrow(datos)))
+    }
+  }
+  
+  resultados &lt;- list()
+  
+  for (exposicion in variables_exposicion) {
+    if (!exposicion %in% names(datos)) {
+      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
+      next
+    }
+    
+    if (debug) {
+      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
+      analizar_valores_logicos(datos[[exposicion]], exposicion)
+    }
+    
+    datos_exp &lt;- datos %&gt;%
+      mutate(
+        evento = convertir_a_logico(.data[[variable_evento]]),
+        expos = convertir_a_logico(.data[[exposicion]])
+      ) %&gt;%
+      filter(!is.na(evento) &amp; !is.na(expos))
+    
+    if (debug) {
+      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
+      cat("Tabla 2x2:\n")
+      if (nrow(datos_exp) &gt; 0) {
+        tab &lt;- table(
+          Exposicion = datos_exp$expos,
+          Evento = datos_exp$evento
+        )
+        print(tab)
+      }
+    }
+    
+    if (nrow(datos_exp) == 0) {
+      if (debug) cat("No hay datos válidos para esta exposición\n")
+      next
+    }
+    
+    tab &lt;- table(
+      Exposicion = datos_exp$expos,
+      Evento = datos_exp$evento
+    )
+    
+    if (nrow(tab) &gt;= 2 &amp;&amp; ncol(tab) &gt;= 2) {
+      if ("TRUE" %in% rownames(tab) &amp;&amp; "FALSE" %in% rownames(tab)) {
+        expuestos_total &lt;- sum(tab["TRUE", ])
+        no_expuestos_total &lt;- sum(tab["FALSE", ])
+        
+        tasa_expuestos &lt;- ifelse(expuestos_total &gt; 0, 
+                                 tab["TRUE", "TRUE"] / expuestos_total, 
+                                 NA)
+        tasa_no_expuestos &lt;- ifelse(no_expuestos_total &gt; 0, 
+                                    tab["FALSE", "TRUE"] / no_expuestos_total, 
+                                    NA)
+        
+        rr &lt;- ifelse(!is.na(tasa_no_expuestos) &amp;&amp; tasa_no_expuestos &gt; 0,
+                     tasa_expuestos / tasa_no_expuestos,
+                     NA)
+        
+        dr &lt;- ifelse(!is.na(tasa_expuestos) &amp;&amp; !is.na(tasa_no_expuestos),
+                     tasa_expuestos - tasa_no_expuestos,
+                     NA)
+        
+        resultados[[exposicion]] &lt;- list(
+          tabla = tab,
+          n_expuestos = expuestos_total,
+          n_no_expuestos = no_expuestos_total,
+          casos_expuestos = tab["TRUE", "TRUE"],
+          casos_no_expuestos = tab["FALSE", "TRUE"],
+          tasa_expuestos = tasa_expuestos,
+          tasa_no_expuestos = tasa_no_expuestos,
+          riesgo_relativo = rr,
+          diferencia_riesgo = dr,
+          n_total = nrow(datos_exp)
+        )
+      } else {
+        if (debug) cat("Tabla no tiene filas TRUE y FALSE\n")
+      }
+    } else {
+      if (debug) cat(sprintf("Tabla no es 2x2: dimensiones %d x %d\n", nrow(tab), ncol(tab)))
+    }
+  }
+  
+  if (debug) cat(sprintf("\nTotal de exposiciones procesadas: %d\n", length(resultados)))
+  
+  return(resultados)
+}
+
+calcular_odds_ratio &lt;- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
+  
+  if (debug) {
+    cat("\n=== DEBUGGING ODDS RATIO ===\n")
+    cat(sprintf("Variable evento: %s\n", variable_evento))
+    if (variable_evento %in% names(datos)) {
+      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
+    }
+  }
+  
+  if (!is.null(variable_participo) &amp;&amp; variable_participo %in% names(datos)) {
+    datos &lt;- datos %&gt;% 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %&gt;%
+      filter(participa == TRUE) %&gt;%
+      select(-participa)
+    
+    if (debug) {
+      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
+                  variable_participo, nrow(datos)))
+    }
+  }
+  
+  resultados &lt;- list()
+  
+  for (exposicion in variables_exposicion) {
+    if (!exposicion %in% names(datos)) {
+      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
+      next
+    }
+    
+    if (debug) {
+      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
+      analizar_valores_logicos(datos[[exposicion]], exposicion)
+    }
+    
+    datos_exp &lt;- datos %&gt;%
+      mutate(
+        evento = convertir_a_logico(.data[[variable_evento]]),
+        expos = convertir_a_logico(.data[[exposicion]])
+      ) %&gt;%
+      filter(!is.na(evento) &amp; !is.na(expos))
+    
+    if (debug) {
+      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
+      cat("Tabla 2x2:\n")
+      if (nrow(datos_exp) &gt; 0) {
+        tab &lt;- table(
+          Exposicion = datos_exp$expos,
+          Evento = datos_exp$evento
+        )
+        print(tab)
+      }
+    }
+    
+    if (nrow(datos_exp) == 0) {
+      if (debug) cat("No hay datos válidos para esta exposición\n")
+      next
+    }
+    
+    tab &lt;- table(
+      Exposicion = datos_exp$expos,
+      Evento = datos_exp$evento
+    )
+    
+    if (nrow(tab) &gt;= 2 &amp;&amp; ncol(tab) &gt;= 2) {
+      if ("TRUE" %in% rownames(tab) &amp;&amp; "FALSE" %in% rownames(tab)) {
+        a &lt;- tab["TRUE", "TRUE"]
+        b &lt;- tab["TRUE", "FALSE"]
+        c &lt;- tab["FALSE", "TRUE"]
+        d &lt;- tab["FALSE", "FALSE"]
+        
+        or &lt;- ifelse(b &gt; 0 &amp;&amp; c &gt; 0, (a * d) / (b * c), NA)
+        
+        if (!is.na(or) &amp;&amp; a &gt; 0 &amp;&amp; b &gt; 0 &amp;&amp; c &gt; 0 &amp;&amp; d &gt; 0) {
+          se_log_or &lt;- sqrt(1/a + 1/b + 1/c + 1/d)
+          log_or &lt;- log(or)
+          li &lt;- exp(log_or - 1.96 * se_log_or)
+          ls &lt;- exp(log_or + 1.96 * se_log_or)
+        } else {
+          li &lt;- NA
+          ls &lt;- NA
+        }
+        
+        total &lt;- a + b + c + d
+        if (total &gt; 0) {
+          esperado_a &lt;- (a + b) * (a + c) / total
+          esperado_b &lt;- (a + b) * (b + d) / total
+          esperado_c &lt;- (c + d) * (a + c) / total
+          esperado_d &lt;- (c + d) * (b + d) / total
+          
+          chi2 &lt;- 0
+          if (esperado_a &gt; 0) chi2 &lt;- chi2 + ((a - esperado_a)^2 / esperado_a)
+          if (esperado_b &gt; 0) chi2 &lt;- chi2 + ((b - esperado_b)^2 / esperado_b)
+          if (esperado_c &gt; 0) chi2 &lt;- chi2 + ((c - esperado_c)^2 / esperado_c)
+          if (esperado_d &gt; 0) chi2 &lt;- chi2 + ((d - esperado_d)^2 / esperado_d)
+          
+          p_valor &lt;- pchisq(chi2, df = 1, lower.tail = FALSE)
+        } else {
+          chi2 &lt;- NA
+          p_valor &lt;- NA
+        }
+        
+        resultados[[exposicion]] &lt;- list(
+          tabla = tab,
+          a = a, b = b, c = c, d = d,
+          odds_ratio = or,
+          ic_95_inf = li,
+          ic_95_sup = ls,
+          chi_cuadrado = chi2,
+          p_valor = p_valor,
+          n_total = nrow(datos_exp)
+        )
+      }
+    }
+  }
+  
+  return(resultados)
+}
+
+# =========================
+# FUNCIÓN PARA FOREST PLOT
+# =========================
+
+crear_forest_plot &lt;- function(resultados_or) {
+  if (is.null(resultados_or) || length(resultados_or) == 0) {
+    return(ggplot() + 
+             annotate("text", x = 0.5, y = 0.5, 
+                     label = "No hay datos para crear el forest plot", 
+                     size = 6) +
+             theme_void())
+  }
+  
+  # Crear dataframe para el plot
+  datos_plot &lt;- data.frame(
+    Exposicion = names(resultados_or),
+    OR = sapply(resultados_or, function(x) x$odds_ratio),
+    LI = sapply(resultados_or, function(x) x$ic_95_inf),
+    LS = sapply(resultados_or, function(x) x$ic_95_sup),
+    Significativo = sapply(resultados_or, function(x) {
+      if (is.na(x$ic_95_inf) || is.na(x$ic_95_sup)) return(FALSE)
+      return(x$ic_95_inf &gt; 1 || x$ic_95_sup &lt; 1)
+    })
+  )
+  
+  # Ordenar por OR
+  datos_plot &lt;- datos_plot[order(datos_plot$OR, decreasing = TRUE), ]
+  datos_plot$Exposicion &lt;- factor(datos_plot$Exposicion, 
+                                  levels = rev(datos_plot$Exposicion))
+  
+  # Calcular límites del gráfico
+  min_lim &lt;- min(c(datos_plot$LI, 0.1), na.rm = TRUE) * 0.8
+  max_lim &lt;- max(c(datos_plot$LS, 10), na.rm = TRUE) * 1.2
+  
+  # Crear el forest plot
+  p &lt;- ggplot(datos_plot, aes(x = OR, y = Exposicion)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "red", alpha = 0.7) +
+    geom_errorbarh(aes(xmin = LI, xmax = LS), 
+                   height = 0.2, 
+                   color = ifelse(datos_plot$Significativo, "darkblue", "gray50"),
+                   size = 1) +
+    geom_point(aes(color = Significativo), 
+               size = 3, 
+               shape = 18) +
+    scale_color_manual(values = c("FALSE" = "gray50", "TRUE" = "darkblue")) +
+    scale_x_log10(limits = c(min_lim, max_lim),
+                  breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10),
+                  labels = c("0.1", "0.2", "0.5", "1", "2", "5", "10")) +
+    labs(
+      title = "Forest Plot - Odds Ratios por Exposición",
+      x = "Odds Ratio (escala logarítmica)",
+      y = "Exposición",
+      caption = "Líneas verticales representan intervalos de confianza al 95%\nOR &gt; 1: mayor riesgo, OR &lt; 1: menor riesgo"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      axis.title = element_text(face = "bold"),
+      axis.text.y = element_text(size = 11),
+      panel.grid.major = element_line(color = "gray90"),
+      panel.grid.minor = element_blank(),
+      legend.position = "none",
+      plot.caption = element_text(size = 10, color = "gray50", hjust = 0)
+    ) +
+    geom_text(aes(label = sprintf("%.2f [%.2f-%.2f]", OR, LI, LS),
+                  x = max_lim * 0.9),
+              hjust = 1, size = 3.5, color = "black")
+  
+  return(p)
+}
+
+render_tabla_tasas &lt;- function(resultados_tasas) {
+  if (is.null(resultados_tasas) || length(resultados_tasas) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      tags$h5("No se pudieron calcular tasas de ataque"),
+      tags$p("Posibles causas:"),
+      tags$ul(
+        tags$li("Las variables no contienen valores lógicos (VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0)"),
+        tags$li("Faltan datos en las variables de evento o exposición"),
+        tags$li("Las tablas 2x2 no pudieron construirse (no hay suficiente variación en los datos)"),
+        tags$li("Verifique que las columnas en el CSV coincidan con las especificadas en el YAML")
+      ),
+      tags$p("Tip: Las variables lógicas deben usar valores como: VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0")
+    ))
+  }
+  
+  tablas &lt;- lapply(names(resultados_tasas), function(exposicion) {
+    res &lt;- resultados_tasas[[exposicion]]
+    
+    tagList(
+      h5(strong(exposicion), sprintf(" (n=%d)", res$n_total)),
+      tags$table(
+        class = "table table-sm table-bordered",
+        style = "width: auto; margin-bottom: 20px;",
+        tags$thead(
+          tags$tr(
+            tags$th(""),
+            tags$th("Enfermos"),
+            tags$th("Total"),
+            tags$th("Tasa de ataque")
+          )
+        ),
+        tags$tbody(
+          tags$tr(
+            tags$td(strong("Expuestos")),
+            tags$td(res$casos_expuestos),
+            tags$td(res$n_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_expuestos), 
+                          sprintf("%.1f%%", res$tasa_expuestos * 100), 
+                          "N/A"))
+          ),
+          tags$tr(
+            tags$td(strong("No expuestos")),
+            tags$td(res$casos_no_expuestos),
+            tags$td(res$n_no_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_no_expuestos), 
+                          sprintf("%.1f%%", res$tasa_no_expuestos * 100), 
+                          "N/A"))
+          ),
+          tags$tr(
+            tags$td(strong("Riesgo Relativo (RR)")),
+            tags$td(colspan = "3", 
+                   ifelse(!is.na(res$riesgo_relativo), 
+                          sprintf("%.2f", res$riesgo_relativo), 
+                          "No calculable"))
+          ),
+          tags$tr(
+            tags$td(strong("Diferencia de Riesgo")),
+            tags$td(colspan = "3", 
+                   ifelse(!is.na(res$diferencia_riesgo), 
+                          sprintf("%.3f", res$diferencia_riesgo), 
+                          "No calculable"))
+          )
+        )
+      )
+    )
+  })
+  
+  tagList(tablas)
+}
+
+render_tabla_or &lt;- function(resultados_or) {
+  if (is.null(resultados_or) || length(resultados_or) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      "No se pudieron calcular odds ratios"
+    ))
+  }
+  
+  filas &lt;- lapply(names(resultados_or), function(exposicion) {
+    res &lt;- resultados_or[[exposicion]]
+    
+    tags$tr(
+      tags$td(strong(exposicion)),
+      tags$td(sprintf("%.2f", res$odds_ratio)),
+      tags$td(ifelse(!is.na(res$ic_95_inf), sprintf("[%.2f-%.2f]", res$ic_95_inf, res$ic_95_sup), "N/A")),
+      tags$td(ifelse(!is.na(res$chi_cuadrado), sprintf("%.2f", res$chi_cuadrado), "N/A")),
+      tags$td(ifelse(!is.na(res$p_valor), 
+                    ifelse(res$p_valor &lt; 0.001, "&lt;0.001", sprintf("%.3f", res$p_valor)), 
+                    "N/A"))
+    )
+  })
+  
+  tagList(
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Exposición"),
+          tags$th("Odds Ratio"),
+          tags$th("IC 95%"),
+          tags$th("Chi²"),
+          tags$th("Valor p")
+        )
+      ),
+      tags$tbody(filas)
+    ),
+    
+    div(
+      class = "alert alert-info mt-3",
+      tags$small(
+        strong("Interpretación:"),
+        "OR &gt; 1: asociación positiva (mayor riesgo), OR &lt; 1: asociación negativa (menor riesgo), ",
+        "OR = 1: no asociación. IC 95% que no incluye 1 indica significancia estadística."
+      )
+    )
+  )
+}
+
+# =========================
+# UI
+# =========================
+
+ui &lt;- fluidPage(
+  theme = bs_theme(version = 5, bootswatch = "flatly"),
+  
+  titlePanel(""),
+  
+  sidebarLayout(
+    sidebarPanel(
+      width = 3,
+      fileInput("datos", "Subir CSV", accept = c(".csv", ".txt")),
+      fileInput("yaml", "Subir YAML", accept = c(".yaml", ".yml")),
+      checkboxInput("debug", "Modo debug", value = FALSE),
+      actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
+      hr(),
+      h5("Estado de carga:"),
+      verbatimTextOutput("debug_info"),
+      verbatimTextOutput("debug_tipos")
+    ),
+    
+    mainPanel(
+      width = 9,
+      uiOutput("mensajes"),
+      uiOutput("resultado")
+    )
+  )
+)
+
+# =========================
+# SERVER
+# =========================
+
+server &lt;- function(input, output, session) {
+  
+  estado &lt;- reactiveValues(
+    datos = NULL,
+    solicitud = NULL,
+    ejecutado = FALSE,
+    resultados_or = NULL  # Para almacenar resultados de OR
+  )
+  
+  observeEvent(input$datos, {
+    tryCatch({
+      estado$datos &lt;- read_delim(input$datos$datapath, delim = ";", 
+                                locale = locale(decimal_mark = ","),
+                                show_col_types = FALSE)
+      showNotification("✓ Datos CSV cargados", type = "message")
+    }, error = function(e) {
+      tryCatch({
+        estado$datos &lt;- read_csv(input$datos$datapath, show_col_types = FALSE)
+        showNotification("✓ Datos CSV cargados", type = "message")
+      }, error = function(e2) {
+        showNotification(paste("Error al leer CSV:", e2$message), type = "error")
+        estado$datos &lt;- NULL
+      })
+    })
+  })
+  
+  observeEvent(input$yaml, {
+    tryCatch({
+      estado$solicitud &lt;- read_yaml(input$yaml$datapath)
+      showNotification("✓ YAML cargado", type = "message")
+    }, error = function(e) {
+      showNotification(paste("Error al leer YAML:", e$message), type = "error")
+      estado$solicitud &lt;- NULL
+    })
+  })
+  
+  errores_yaml &lt;- reactive({
+    req(estado$solicitud)
+    
+    errores &lt;- c()
+    
+    if (is.null(estado$solicitud$definicion_problema)) {
+      errores &lt;- c(errores, "Falta sección 'definicion_problema'")
+    } else if (is.null(estado$solicitud$definicion_problema$evento)) {
+      errores &lt;- c(errores, "Falta 'definicion_problema$evento'")
+    }
+    
+    if (is.null(estado$solicitud$variables)) {
+      errores &lt;- c(errores, "Falta sección 'variables'")
+    }
+    
+    errores
+  })
+  
+  errores_mapeo &lt;- reactive({
+    req(estado$datos, estado$solicitud)
+    
+    if (is.null(estado$solicitud$variables)) {
+      return(c())
+    }
+    
+    vars_yaml &lt;- estado$solicitud$variables
+    vars_datos &lt;- names(estado$datos)
+    errores &lt;- c()
+    
+    if (!is.null(vars_yaml$sociodemograficas)) {
+      for (var in vars_yaml$sociodemograficas) {
+        
+        var_nombre &lt;- if (is.list(var) &amp;&amp; "nombre" %in% names(var)) {
+          var$nombre
+        } else {
+          var
+        }
+        
+        if (!var_nombre %in% vars_datos) {
+          errores &lt;- c(
+            errores,
+            paste("Variable sociodemográfica no encontrada:", var_nombre)
+          )
+        }
+      }
+    }
+    
+    if (!is.null(vars_yaml$variable_tiempo_inicio)) {
+      var_inicio &lt;- vars_yaml$variable_tiempo_inicio
+      if (!var_inicio %in% vars_datos) {
+        errores &lt;- c(errores, paste("Variable de tiempo no encontrada:", var_inicio))
+      }
+    }
+    
+    if (!is.null(vars_yaml$evento)) {
+      var_evento &lt;- vars_yaml$evento
+      if (!var_evento %in% vars_datos) {
+        errores &lt;- c(errores, paste("Variable de evento no encontrada:", var_evento))
+      }
+    }
+    
+    if (!is.null(vars_yaml$exposicion)) {
+      for (var in vars_yaml$exposicion) {
+        if (!var %in% vars_datos) {
+          errores &lt;- c(errores, paste("Variable de exposición no encontrada:", var))
+        }
+      }
+    }
+    
+    if (!is.null(vars_yaml$participo)) {
+      var_participo &lt;- vars_yaml$participo
+      if (!var_participo %in% vars_datos) {
+        errores &lt;- c(errores, paste("Variable de participación no encontrada:", var_participo))
+      }
+    }
+    
+    errores
+  })
+  
+  output$debug_tipos &lt;- renderPrint({
+    req(estado$datos, estado$solicitud)
+    
+    datos &lt;- estado$datos
+    vars_sociodem &lt;- estado$solicitud$variables$sociodemograficas
+    
+    cat("=== DEBUG: TIPOS DE VARIABLES ===\n")
+    
+    for (var in vars_sociodem) {
+      if (is.list(var) &amp;&amp; "nombre" %in% names(var)) {
+        var_nombre &lt;- var$nombre
+        var_tipo &lt;- var$tipo
+      } else {
+        var_nombre &lt;- var
+        var_tipo &lt;- "No especificado"
+      }
+      
+      if (var_nombre %in% names(datos)) {
+        col &lt;- datos[[var_nombre]]
+        cat(sprintf("%s:\n", var_nombre))
+        cat(sprintf("  Tipo YAML: %s\n", var_tipo))
+        cat(sprintf("  Tipo R: %s\n", class(col)))
+        cat(sprintf("  Valores únicos: %d\n", length(unique(na.omit(col)))))
+        cat(sprintf("  Ejemplos: %s\n", paste(head(unique(col), 5), collapse=", ")))
+        cat("  ---\n")
+      }
+    }
+  })
+  
+  informe &lt;- eventReactive(input$ejecutar, {
+    
+    if (is.null(estado$datos)) {
+      return(list(error = "Debe cargar un archivo CSV"))
+    }
+    
+    if (is.null(estado$solicitud)) {
+      return(list(error = "Debe cargar un archivo YAML"))
+    }
+    
+    err_yaml &lt;- errores_yaml()
+    if (length(err_yaml) &gt; 0) {
+      return(list(error = paste("Errores en YAML:\n", colapsar_errores(err_yaml))))
+    }
+    
+    err_mapeo &lt;- errores_mapeo()
+    if (length(err_mapeo) &gt; 0) {
+      return(list(error = paste("Errores de mapeo:\n", colapsar_errores(err_mapeo))))
+    }
+    
+    productos_esperados &lt;- estado$solicitud$productos
+    productos &lt;- character(0)
+    
+    if (!is.null(productos_esperados) &amp;&amp; length(productos_esperados) &gt; 0) {
+      productos &lt;- unlist(productos_esperados, use.names = FALSE)
+    }
+    
+    estado$ejecutado &lt;- TRUE
+    
+    list(
+      datos = estado$datos,
+      vars = estado$solicitud$variables,
+      evento = estado$solicitud$definicion_problema$evento,
+      productos = productos,
+      error = NULL
+    )
+  })
+  
+  output$mensajes &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) {
+      div(
+        class = "alert alert-danger",
+        role = "alert",
+        h4(class = "alert-heading", "❌ Error"),
+        HTML(gsub("\n", "&lt;br&gt;", info$error))
+      )
+    } else {
+      div(
+        class = "alert alert-success",
+        role = "alert",
+        "✓ Informe generado correctamente"
+      )
+    }
+  })
+  
+  output$resultado &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) {
+      return(NULL)
+    }
+    
+    ev &lt;- info$evento
+    productos &lt;- info$productos
+    
+    elementos &lt;- tagList(
+      hr(),
+      h2(ev$nombre, style = "color: #2c3e50;"),
+      h4("Definición de caso"),
+      p(ev$definicion_caso, style = "margin-left: 15px;"),
+      h4("Población, lugar y período"),
+      tags$ul(
+        tags$li(strong("Población: "), ev$poblacion_en_riesgo),
+        tags$li(strong("Lugar: "), ev$lugar),
+        tags$li(strong("Período: "), ev$periodo_tiempo)
+      ),
+      hr()
+    )
+    
+    if (length(productos) &gt; 0 &amp;&amp; "descripcion_univariada" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Descripción univariada", style = "color: #34495e;"),
+        uiOutput("tabla_univariada"),
+        hr()
+      )
+    }
+    
+    if (length(productos) &gt; 0 &amp;&amp; "tasas_ataque_por_exposicion" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Tasas de ataque por exposición", style = "color: #34495e;"),
+        p("Análisis de tasas de ataque entre expuestos y no expuestos a cada alimento:"),
+        uiOutput("tabla_tasas"),
+        hr()
+      )
+    }
+    
+    if (length(productos) &gt; 0 &amp;&amp; "odds_ratio_por_exposicion" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Odds ratio por exposición", style = "color: #34495e;"),
+        p("Asociación entre exposición a alimentos y enfermedad (odds ratio):"),
+        uiOutput("tabla_or"),
+        h3("Forest Plot de Odds Ratios", style = "color: #34495e;"),
+        p("Visualización gráfica de los odds ratios con intervalos de confianza:"),
+        plotOutput("forest_plot", height = "600px"),
+        hr()
+      )
+    }
+    
+    if (length(productos) &gt; 0 &amp;&amp; "curva_epidemica" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Curva epidémica", style = "color: #34495e;"),
+        plotOutput("plot_curva", height = "450px"),
+        hr()
+      )
+    }
+    
+    return(elementos)
+  })
+  
+  output$tabla_univariada &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars_sociodem &lt;- info$vars$sociodemograficas
+    
+    if (is.null(vars_sociodem)) {
+      return(div(
+        class = "alert alert-warning",
+        "No se definieron variables sociodemográficas en el YAML"
+      ))
+    }
+    
+    desc &lt;- generar_descripcion_univariada(info$datos, vars_sociodem)
+    
+    render_univariada(desc)
+  })
+  
+  output$tabla_tasas &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars &lt;- info$vars
+    
+    if (is.null(vars$evento) || is.null(vars$exposicion)) {
+      return(div(
+        class = "alert alert-warning",
+        "Faltan definiciones de evento o exposiciones en el YAML"
+      ))
+    }
+    
+    variable_evento &lt;- vars$evento
+    variables_exposicion &lt;- vars$exposicion
+    variable_participo &lt;- vars$participo
+    
+    if (!variable_evento %in% names(info$datos)) {
+      return(div(
+        class = "alert alert-warning",
+        paste("Variable de evento no encontrada:", variable_evento)
+      ))
+    }
+    
+    if (input$debug) {
+      cat("\n=== DEBUG TASAS DE ATAQUE ===\n")
+      cat("Variable evento:", variable_evento, "\n")
+      cat("Variable participo:", variable_participo, "\n")
+      cat("Exposiciones:", paste(variables_exposicion, collapse=", "), "\n")
+      
+      datos &lt;- info$datos
+      cat("\nValores únicos en", variable_evento, ":\n")
+      print(table(datos[[variable_evento]], useNA = "always"))
+      
+      if (!is.null(variable_participo)) {
+        cat("\nValores únicos en", variable_participo, ":\n")
+        print(table(datos[[variable_participo]], useNA = "always"))
+      }
+    }
+    
+    resultados_tasas &lt;- calcular_tasas_ataque(
+      datos = info$datos,
+      variable_evento = variable_evento,
+      variables_exposicion = variables_exposicion,
+      variable_participo = variable_participo,
+      debug = input$debug
+    )
+    
+    render_tabla_tasas(resultados_tasas)
+  })
+  
+  output$tabla_or &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars &lt;- info$vars
+    
+    if (is.null(vars$evento) || is.null(vars$exposicion)) {
+      return(div(
+        class = "alert alert-warning",
+        "Faltan definiciones de evento o exposiciones en el YAML"
+      ))
+    }
+    
+    variable_evento &lt;- vars$evento
+    variables_exposicion &lt;- vars$exposicion
+    variable_participo &lt;- vars$participo
+    
+    if (!variable_evento %in% names(info$datos)) {
+      return(div(
+        class = "alert alert-warning",
+        paste("Variable de evento no encontrada:", variable_evento)
+      ))
+    }
+    
+    if (input$debug) {
+      cat("\n=== DEBUG ODDS RATIO ===\n")
+      cat("Variable evento:", variable_evento, "\n")
+      cat("Variable participo:", variable_participo, "\n")
+      cat("Exposiciones:", paste(variables_exposicion, collapse=", "), "\n")
+      
+      datos &lt;- info$datos
+      cat("\nValores únicos en", variable_evento, ":\n")
+        print(table(datos[[variable_evento]], useNA = "always"))
+      
+      if (!is.null(variable_participo)) {
+        cat("\nValores únicos en", variable_participo, ":\n")
+        print(table(datos[[variable_participo]], useNA = "always"))
+      }
+      
+      for (exp in variables_exposicion) {
+        if (exp %in% names(datos)) {
+          cat("\n--- Exposición:", exp, "---\n")
+          cat("Valores originales:\n")
+          print(table(datos[[exp]], useNA = "always"))
+          
+          convertidos &lt;- convertir_a_logico(datos[[exp]])
+          cat("Valores convertidos:\n")
+          print(table(convertidos, useNA = "always"))
+        }
+      }
+    }
+    
+    # Calcular odds ratio y almacenar en estado reactivo
+    resultados_or &lt;- calcular_odds_ratio(
+      datos = info$datos,
+      variable_evento = variable_evento,
+      variables_exposicion = variables_exposicion,
+      variable_participo = variable_participo,
+      debug = input$debug
+    )
+    
+    # Almacenar resultados para el forest plot
+    estado$resultados_or &lt;- resultados_or
+    
+    if (input$debug &amp;&amp; length(resultados_or) &gt; 0) {
+      cat("\n=== RESULTADOS ODDS RATIO ===\n")
+      for (exp in names(resultados_or)) {
+        cat("\nExposición:", exp, "\n")
+        print(resultados_or[[exp]])
+      }
+    }
+    
+    render_tabla_or(resultados_or)
+  })
+  
+  # =========================
+  # FOREST PLOT
+  # =========================
+  
+  output$forest_plot &lt;- renderPlot({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    # Verificar que se solicitó el producto
+    if (!"odds_ratio_por_exposicion" %in% info$productos) {
+      return(NULL)
+    }
+    
+    # Usar los resultados almacenados
+    if (is.null(estado$resultados_or) || length(estado$resultados_or) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, 
+                       label = "No hay datos de odds ratios para crear el forest plot", 
+                       size = 6) +
+               theme_void())
+    }
+    
+    # Crear el forest plot
+    crear_forest_plot(estado$resultados_or)
+  })
+  
+  output$plot_curva &lt;- renderPlot({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) {
+      return(NULL)
+    }
+    
+    if (!"curva_epidemica" %in% info$productos) {
+      return(NULL)
+    }
+    
+    datos &lt;- info$datos
+    var_inicio &lt;- info$vars$variable_tiempo_inicio
+    
+    if (!var_inicio %in% names(datos)) {
+      plot.new()
+      text(0.5, 0.5, 
+           paste("Error: columna", var_inicio, "no encontrada"), 
+           cex = 1.2, col = "red")
+      return()
+    }
+    
+    datos_plot &lt;- datos %&gt;%
+      mutate(tiempo = as.numeric(.data[[var_inicio]])) %&gt;%
+      filter(!is.na(tiempo))
+    
+    if (nrow(datos_plot) == 0) {
+      plot.new()
+      text(0.5, 0.5, 
+           "No hay datos válidos para graficar", 
+           cex = 1.2, col = "gray50")
+      return()
+    }
+    
+    ggplot(datos_plot, aes(x = tiempo)) +
+      geom_histogram(binwidth = 1, fill = "steelblue", color = "white", alpha = 0.8) +
+      labs(
+        title = "Curva epidémica",
+        x = "Tiempo desde inicio de síntomas",
+        y = "Número de casos"
+      ) +
+      theme_minimal(base_size = 14) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        panel.grid.minor = element_blank()
+      )
+  })
+  
+  output$debug_info &lt;- renderText({
+    paste0(
+      "CSV: ", if(is.null(estado$datos)) "❌" else "✓",
+      "\nYAML: ", if(is.null(estado$solicitud)) "❌" else "✓",
+      "\nFilas: ", if(!is.null(estado$datos)) nrow(estado$datos) else "0",
+      "\nColumnas: ", if(!is.null(estado$datos)) paste(names(estado$datos), collapse=", ") else "N/A"
+    )
+  })
+}
+shinyApp(ui, server)</code></pre>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
