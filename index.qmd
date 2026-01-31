@@ -88,10 +88,275 @@ determinar_tipo_variable <- function(col, tipo_especificado = NA) {
 }
 
 # =========================
+# FUNCIÓN: CREAR VARIABLES INTERMEDIAS
+# =========================
+
+crear_variables_intermedias <- function(datos, config_variables, vars_yaml = NULL) {
+  datos_mod <- datos
+  
+  if (!is.null(config_variables) && !is.null(config_variables$calculo_edad)) {
+    tryCatch({
+      # Configuración para cálculo de edad
+      config_edad <- config_variables$calculo_edad
+      
+      # Obtener nombre de la variable de fecha de nacimiento
+      if (!is.null(config_edad$fecha_nacimiento)) {
+        var_fecha_nac <- config_edad$fecha_nacimiento
+        
+        # Determinar fecha de referencia (fecha del brote)
+        if (!is.null(config_edad$fecha_brote)) {
+          # Posibilidad 1: fecha_brote es el nombre de una variable en los datos
+          if (is.character(config_edad$fecha_brote) && config_edad$fecha_brote %in% names(datos_mod)) {
+            # Usar la fecha máxima de esa variable como fecha de referencia
+            fecha_brote <- max(as.Date(datos_mod[[config_edad$fecha_brote]]), na.rm = TRUE)
+            message(sprintf("Usando fecha máxima de '%s' como referencia: %s", 
+                           config_edad$fecha_brote, fecha_brote))
+          } 
+          # Posibilidad 2: fecha_brote es una fecha fija en formato string
+          else if (is.character(config_edad$fecha_brote)) {
+            tryCatch({
+              fecha_brote <- as.Date(config_edad$fecha_brote)
+              message(sprintf("Usando fecha de brote fija: %s", fecha_brote))
+            }, error = function(e) {
+              # Si no se puede parsear como fecha y no es una columna, error
+              fecha_brote <<- Sys.Date()
+              warning(sprintf("No se pudo interpretar fecha_brote '%s'. Usando fecha actual.", 
+                             config_edad$fecha_brote))
+            })
+          } else {
+            # Posibilidad 3: fecha_brote podría ser una referencia a otra variable del YAML
+            # (ej: variable de consumo o fecha de inicio)
+            if (!is.null(vars_yaml)) {
+              # Buscar variable de tiempo o consumo
+              if (!is.null(vars_yaml$variable_tiempo_inicio) && 
+                  vars_yaml$variable_tiempo_inicio %in% names(datos_mod)) {
+                fecha_brote <- max(as.Date(datos_mod[[vars_yaml$variable_tiempo_inicio]]), na.rm = TRUE)
+                message(sprintf("Usando fecha máxima de '%s' (variable_tiempo_inicio) como referencia: %s", 
+                               vars_yaml$variable_tiempo_inicio, fecha_brote))
+              } else if (!is.null(vars_yaml$exposicion)) {
+                # Buscar entre las variables de exposición alguna que pueda ser fecha
+                # (esto es más heurístico)
+                fechas_posibles <- character(0)
+                for (exp in vars_yaml$exposicion) {
+                  if (exp %in% names(datos_mod) && 
+                      any(grepl("fecha|date|consumo", tolower(exp)))) {
+                    fechas_posibles <- c(fechas_posibles, exp)
+                  }
+                }
+                if (length(fechas_posibles) > 0) {
+                  # Tomar la primera fecha posible y usar su máximo
+                  fecha_brote <- max(as.Date(datos_mod[[fechas_posibles[1]]]), na.rm = TRUE)
+                  message(sprintf("Usando fecha máxima de '%s' como referencia: %s", 
+                                 fechas_posibles[1], fecha_brote))
+                } else {
+                  # Si no hay nada, usar fecha actual
+                  fecha_brote <- Sys.Date()
+                  warning("No se pudo determinar fecha de referencia. Usando fecha actual.")
+                }
+              } else {
+                fecha_brote <- Sys.Date()
+                warning("No se especificó fecha_brote válida en YAML. Usando fecha actual.")
+              }
+            } else {
+              fecha_brote <- Sys.Date()
+              warning("No se pudo determinar fecha de referencia. Usando fecha actual.")
+            }
+          }
+        } else {
+          # Si no hay fecha_brote especificada
+          if (!is.null(vars_yaml$variable_tiempo_inicio) && 
+              vars_yaml$variable_tiempo_inicio %in% names(datos_mod)) {
+            fecha_brote <- max(as.Date(datos_mod[[vars_yaml$variable_tiempo_inicio]]), na.rm = TRUE)
+            message(sprintf("Usando fecha máxima de '%s' como referencia: %s", 
+                           vars_yaml$variable_tiempo_inicio, fecha_brote))
+          } else {
+            fecha_brote <- Sys.Date()
+            warning("No se especificó fecha_brote. Usando fecha actual.")
+          }
+        }
+        
+        if (var_fecha_nac %in% names(datos_mod)) {
+          # Convertir fecha de nacimiento a Date
+          datos_mod[[var_fecha_nac]] <- tryCatch({
+            as.Date(datos_mod[[var_fecha_nac]])
+          }, error = function(e) {
+            # Intentar otros formatos comunes
+            as.Date(datos_mod[[var_fecha_nac]], format = "%d/%m/%Y")
+          })
+          
+          # Calcular edad en años
+          datos_mod$calculo_edad <- as.integer(
+            floor(
+              as.numeric(
+                difftime(fecha_brote, datos_mod[[var_fecha_nac]], units = "days")
+              ) / 365.25
+            )
+          )
+          
+          message(sprintf("Variable 'calculo_edad' creada usando fecha de referencia: %s", fecha_brote))
+          
+          # Verificar si hay edades negativas o extremas
+          edades_negativas <- sum(datos_mod$calculo_edad < 0, na.rm = TRUE)
+          if (edades_negativas > 0) {
+            warning(sprintf("Se encontraron %d edades negativas (posible error en fechas)", 
+                           edades_negativas))
+          }
+          
+          edades_extremas <- sum(datos_mod$calculo_edad > 120, na.rm = TRUE)
+          if (edades_extremas > 0) {
+            warning(sprintf("Se encontraron %d edades > 120 años (posible error en fechas)", 
+                           edades_extremas))
+          }
+        }
+      }
+    }, error = function(e) {
+      warning(sprintf("Error al crear calculo_edad: %s", e$message))
+    })
+  }
+  
+  # Crear grupo etario cada 5 años
+  if (!is.null(config_variables$grupo_etario_5)) {
+    tryCatch({
+      # Obtener el nombre de la variable de edad desde la configuración
+      var_edad_nombre <- config_variables$grupo_etario_5$variable_edad
+      
+      if (is.null(var_edad_nombre)) {
+        stop("No se especificó variable_edad para grupo_etario_5")
+      }
+      
+      # Verificar que la variable existe en los datos
+      if (!var_edad_nombre %in% names(datos_mod)) {
+        stop(sprintf("Variable de edad '%s' no encontrada en los datos", var_edad_nombre))
+      }
+      
+      edad_var <- datos_mod[[var_edad_nombre]]
+      var_nombre <- var_edad_nombre
+      
+      # Eliminar valores NA
+      edad_var_clean <- edad_var[!is.na(edad_var)]
+      if (length(edad_var_clean) == 0) {
+        stop(sprintf("Variable '%s' no tiene valores válidos para crear grupos etarios", var_nombre))
+      }
+      
+      # Asegurar que la edad sea numérica
+      if (!is.numeric(edad_var)) {
+        edad_var <- as.numeric(edad_var)
+      }
+      
+      # Calcular límites para los grupos
+      edad_max <- max(edad_var, na.rm = TRUE)
+      breaks <- seq(0, ceiling(edad_max / 5) * 5, by = 5)
+      
+      # Si la edad máxima es menor que el último break, ajustar
+      if (edad_max < max(breaks)) {
+        breaks <- breaks[breaks <= ceiling(edad_max / 5) * 5]
+      }
+      
+      # Asegurar que tenemos al menos 2 breaks
+      if (length(breaks) < 2) {
+        breaks <- c(0, 5)
+      }
+      
+      # Crear grupos cada 5 años
+      datos_mod$grupo_etario_5 <- cut(
+        edad_var,
+        breaks = breaks,
+        include.lowest = TRUE,
+        right = FALSE,
+        labels = paste0(breaks[-length(breaks)], "-", breaks[-1] - 1)
+      )
+      
+      # Para el último grupo, usar formato especial si es abierto
+      niveles <- levels(datos_mod$grupo_etario_5)
+      ultimo_nivel <- niveles[length(niveles)]
+      if (grepl(paste0(max(breaks) - 5, "-", max(breaks) - 1), ultimo_nivel)) {
+        # Reemplazar último nivel con formato abierto
+        niveles[length(niveles)] <- paste0(max(breaks) - 5, "+")
+        levels(datos_mod$grupo_etario_5) <- niveles
+      }
+      
+      message(sprintf("Variable 'grupo_etario_5' creada usando '%s'", var_nombre))
+      
+    }, error = function(e) {
+      warning(sprintf("Error al crear grupo_etario_5: %s", e$message))
+    })
+  }
+  
+  # Crear grupo etario cada 10 años
+  if (!is.null(config_variables$grupo_etario_10)) {
+    tryCatch({
+      # Obtener el nombre de la variable de edad desde la configuración
+      var_edad_nombre <- config_variables$grupo_etario_10$variable_edad
+      
+      if (is.null(var_edad_nombre)) {
+        stop("No se especificó variable_edad para grupo_etario_10")
+      }
+      
+      # Verificar que la variable existe en los datos
+      if (!var_edad_nombre %in% names(datos_mod)) {
+        stop(sprintf("Variable de edad '%s' no encontrada en los datos", var_edad_nombre))
+      }
+      
+      edad_var <- datos_mod[[var_edad_nombre]]
+      var_nombre <- var_edad_nombre
+      
+      # Eliminar valores NA
+      edad_var_clean <- edad_var[!is.na(edad_var)]
+      if (length(edad_var_clean) == 0) {
+        stop(sprintf("Variable '%s' no tiene valores válidos para crear grupos etarios", var_nombre))
+      }
+      
+      # Asegurar que la edad sea numérica
+      if (!is.numeric(edad_var)) {
+        edad_var <- as.numeric(edad_var)
+      }
+      
+      # Calcular límites para los grupos
+      edad_max <- max(edad_var, na.rm = TRUE)
+      breaks <- seq(0, ceiling(edad_max / 10) * 10, by = 10)
+      
+      # Si la edad máxima es menor que el último break, ajustar
+      if (edad_max < max(breaks)) {
+        breaks <- breaks[breaks <= ceiling(edad_max / 10) * 10]
+      }
+      
+      # Asegurar que tenemos al menos 2 breaks
+      if (length(breaks) < 2) {
+        breaks <- c(0, 10)
+      }
+      
+      # Crear grupos cada 10 años
+      datos_mod$grupo_etario_10 <- cut(
+        edad_var,
+        breaks = breaks,
+        include.lowest = TRUE,
+        right = FALSE,
+        labels = paste0(breaks[-length(breaks)], "-", breaks[-1] - 1)
+      )
+      
+      # Para el último grupo, usar formato especial si es abierto
+      niveles <- levels(datos_mod$grupo_etario_10)
+      ultimo_nivel <- niveles[length(niveles)]
+      if (grepl(paste0(max(breaks) - 10, "-", max(breaks) - 1), ultimo_nivel)) {
+        # Reemplazar último nivel con formato abierto
+        niveles[length(niveles)] <- paste0(max(breaks) - 10, "+")
+        levels(datos_mod$grupo_etario_10) <- niveles
+      }
+      
+      message(sprintf("Variable 'grupo_etario_10' creada usando '%s'", var_nombre))
+      
+    }, error = function(e) {
+      warning(sprintf("Error al crear grupo_etario_10: %s", e$message))
+    })
+  }
+  
+  return(datos_mod)
+}
+# =========================
 # FUNCIÓN: DESCRIPCIÓN UNIVARIADA 
 # =========================
 
-generar_descripcion_univariada <- function(datos, variables_sociodem) {
+generar_descripcion_univariada <- function(datos, variables_sociodem, config_variables = NULL) {
   
   if (is.null(variables_sociodem) || length(variables_sociodem) == 0) {
     return(list(error = "No se definieron variables sociodemográficas"))
@@ -122,6 +387,28 @@ generar_descripcion_univariada <- function(datos, variables_sociodem) {
   } else {
     nombres_vars <- as.character(variables_sociodem)
     tipos_vars <- rep(NA, length(nombres_vars))
+  }
+  
+  # Añadir variables creadas automáticamente si están definidas en config_variables
+  # y están presentes en los datos
+  if (!is.null(config_variables)) {
+    # Variables que queremos incluir si existen en los datos
+    vars_a_incluir <- c("calculo_edad", "grupo_etario_5", "grupo_etario_10")
+    
+    for (var_creada in vars_a_incluir) {
+      if (var_creada %in% names(datos) && !var_creada %in% nombres_vars) {
+        nombres_vars <- c(nombres_vars, var_creada)
+        
+        # Determinar tipo según la variable
+        if (var_creada == "calculo_edad") {
+          tipos_vars <- c(tipos_vars, "cuantitativa")
+        } else if (var_creada %in% c("grupo_etario_5", "grupo_etario_10")) {
+          tipos_vars <- c(tipos_vars, "cualitativa")
+        } else {
+          tipos_vars <- c(tipos_vars, NA)
+        }
+      }
+    }
   }
   
   vars_faltantes <- setdiff(nombres_vars, names(datos))
@@ -985,11 +1272,24 @@ server <- function(input, output, session) {
     
     estado$ejecutado <- TRUE
     
+    # Crear variables intermedias si están configuradas
+    datos_procesados <- estado$datos
+    
+    # Verificar si hay configuración de variables creadas
+    if (!is.null(estado$solicitud$variables_creadas)) {
+      datos_procesados <- crear_variables_intermedias(
+        datos = datos_procesados,
+        config_variables = estado$solicitud$variables_creadas,
+        vars_yaml = estado$solicitud$variables  # Pasar las variables del YAML
+      )
+    }
+    
     list(
-      datos = estado$datos,
+      datos = datos_procesados,
       vars = estado$solicitud$variables,
       evento = estado$solicitud$definicion_problema$evento,
       productos = productos,
+      config_variables = estado$solicitud$variables_creadas,
       error = NULL
     )
   })
@@ -1101,7 +1401,11 @@ server <- function(input, output, session) {
       ))
     }
     
-    desc <- generar_descripcion_univariada(info$datos, vars_sociodem)
+    desc <- generar_descripcion_univariada(
+      datos = info$datos, 
+      variables_sociodem = vars_sociodem,
+      config_variables = info$config_variables
+    )
     
     render_univariada(desc)
   })
@@ -1291,30 +1595,208 @@ server <- function(input, output, session) {
       return()
     }
     
-    datos_plot <- datos %>%
-      mutate(tiempo = as.numeric(.data[[var_inicio]])) %>%
-      filter(!is.na(tiempo))
+    # Detectar el tipo de dato de la variable de tiempo
+    dato_tiempo <- datos[[var_inicio]]
     
-    if (nrow(datos_plot) == 0) {
+    # Verificar si hay configuración explícita de unidad de tiempo
+    unidad_tiempo_config <- NULL
+    if (!is.null(info$vars$unidad_tiempo)) {
+      unidad_tiempo_config <- info$vars$unidad_tiempo
+    }
+    
+    # Determinar automáticamente el tipo si no está configurado
+    es_fecha <- FALSE
+    es_hora <- FALSE
+    
+    if (!is.null(unidad_tiempo_config)) {
+      # Si está configurado, usar esa información
+      if (tolower(unidad_tiempo_config) %in% c("fecha", "dia", "días", "dia", "date")) {
+        es_fecha <- TRUE
+      } else if (tolower(unidad_tiempo_config) %in% c("hora", "horas", "hour", "hours")) {
+        es_hora <- TRUE
+      }
+    } else {
+      # Detectar automáticamente
+      # Intentar convertir a fecha
+      fecha_test <- tryCatch({
+        as.Date(dato_tiempo)
+      }, error = function(e) NULL)
+      
+      if (!is.null(fecha_test) && !all(is.na(fecha_test))) {
+        es_fecha <- TRUE
+      } else if (is.numeric(dato_tiempo)) {
+        es_hora <- TRUE
+      }
+    }
+    
+    # Preparar datos según el tipo
+    if (es_fecha) {
+      # Manejo de fechas
+      datos_plot <- datos %>%
+        mutate(tiempo = as.Date(.data[[var_inicio]])) %>%
+        filter(!is.na(tiempo))
+      
+      if (nrow(datos_plot) == 0) {
+        plot.new()
+        text(0.5, 0.5, 
+             "No hay datos válidos para graficar", 
+             cex = 1.2, col = "gray50")
+        return()
+      }
+      
+      # Contar casos por fecha
+      datos_count <- datos_plot %>%
+        group_by(tiempo) %>%
+        summarise(n_casos = n(), .groups = "drop")
+      
+      # Completar todas las fechas del rango (incluir fechas sin casos)
+      rango_fechas <- seq(min(datos_count$tiempo), max(datos_count$tiempo), by = "1 day")
+      datos_count_completo <- data.frame(tiempo = rango_fechas) %>%
+        left_join(datos_count, by = "tiempo") %>%
+        mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
+      
+      # Crear datos para líneas horizontales (sin usar crossing de tidyr)
+      datos_lineas <- datos_count_completo %>%
+        filter(n_casos > 1)
+      
+      if (nrow(datos_lineas) > 0) {
+        # Crear producto cartesiano manualmente
+        max_casos <- max(datos_count_completo$n_casos)
+        datos_lineas <- do.call(rbind, lapply(1:nrow(datos_lineas), function(i) {
+          n <- datos_lineas$n_casos[i]
+          data.frame(
+            tiempo = datos_lineas$tiempo[i],
+            n_casos = n,
+            linea = 1:(n-1)  # Líneas desde 1 hasta n-1
+          )
+        }))
+      } else {
+        datos_lineas <- data.frame(tiempo = as.Date(character(0)), n_casos = numeric(0), linea = numeric(0))
+      }
+      
+      # Crear gráfico de barras con fechas
+      # width = 1 para barras pegadas, sin color de borde
+      p <- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
+        geom_col(fill = "steelblue", alpha = 0.8, width = 1)
+      
+      # Agregar líneas horizontales si hay datos
+      if (nrow(datos_lineas) > 0) {
+        p <- p + geom_hline(
+          data = datos_lineas,
+          aes(yintercept = linea),
+          color = "white",
+          linewidth = 0.3,
+          alpha = 0.6
+        )
+      }
+      
+      p <- p +
+        scale_x_date(
+          date_breaks = "1 day",
+          date_labels = "%d/%m",
+          expand = expansion(mult = c(0.05, 0.05))
+        ) +
+        labs(
+          title = "Curva epidémica",
+          x = "Fecha de inicio de síntomas",
+          y = "Número de casos"
+        ) +
+        theme_minimal(base_size = 14) +
+        theme(
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          panel.grid.minor = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1)
+        )
+      
+    } else if (es_hora) {
+      # Manejo de horas (numérico)
+      datos_plot <- datos %>%
+        mutate(tiempo = as.numeric(.data[[var_inicio]])) %>%
+        filter(!is.na(tiempo))
+      
+      if (nrow(datos_plot) == 0) {
+        plot.new()
+        text(0.5, 0.5, 
+             "No hay datos válidos para graficar", 
+             cex = 1.2, col = "gray50")
+        return()
+      }
+      
+      # Contar casos por hora
+      datos_count <- datos_plot %>%
+        group_by(tiempo) %>%
+        summarise(n_casos = n(), .groups = "drop")
+      
+      # Completar todas las horas del rango (incluir horas sin casos)
+      rango_horas <- seq(floor(min(datos_count$tiempo)), ceiling(max(datos_count$tiempo)), by = 1)
+      datos_count_completo <- data.frame(tiempo = rango_horas) %>%
+        left_join(datos_count, by = "tiempo") %>%
+        mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
+      
+      # Crear datos para líneas horizontales (sin usar crossing de tidyr)
+      datos_lineas <- datos_count_completo %>%
+        filter(n_casos > 1)
+      
+      if (nrow(datos_lineas) > 0) {
+        # Crear producto cartesiano manualmente
+        max_casos <- max(datos_count_completo$n_casos)
+        datos_lineas <- do.call(rbind, lapply(1:nrow(datos_lineas), function(i) {
+          n <- datos_lineas$n_casos[i]
+          data.frame(
+            tiempo = datos_lineas$tiempo[i],
+            n_casos = n,
+            linea = 1:(n-1)  # Líneas desde 1 hasta n-1
+          )
+        }))
+      } else {
+        datos_lineas <- data.frame(tiempo = numeric(0), n_casos = numeric(0), linea = numeric(0))
+      }
+      
+      # Crear gráfico de barras con horas
+      # width = 1 para barras pegadas, sin color de borde
+      p <- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
+        geom_col(fill = "steelblue", alpha = 0.8, width = 1)
+      
+      # Agregar líneas horizontales si hay datos
+      if (nrow(datos_lineas) > 0) {
+        p <- p + geom_hline(
+          data = datos_lineas,
+          aes(yintercept = linea),
+          color = "white",
+          linewidth = 0.3,
+          alpha = 0.6
+        )
+      }
+      
+      p <- p +
+        scale_x_continuous(
+          breaks = seq(floor(min(datos_count$tiempo)), 
+                      ceiling(max(datos_count$tiempo)), 
+                      by = 1),
+          expand = expansion(mult = c(0.05, 0.05))
+        ) +
+        labs(
+          title = "Curva epidémica",
+          x = "Horas desde inicio de síntomas",
+          y = "Número de casos"
+        ) +
+        theme_minimal(base_size = 14) +
+        theme(
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          panel.grid.minor = element_blank()
+        )
+      
+    } else {
+      # Si no se puede determinar el tipo
       plot.new()
       text(0.5, 0.5, 
-           "No hay datos válidos para graficar", 
-           cex = 1.2, col = "gray50")
+           "No se pudo determinar el tipo de variable de tiempo\n(configure 'unidad_tiempo' en el YAML)", 
+           cex = 1.2, col = "orange")
       return()
     }
     
-    ggplot(datos_plot, aes(x = tiempo)) +
-      geom_histogram(binwidth = 1, fill = "steelblue", color = "white", alpha = 0.8) +
-      labs(
-        title = "Curva epidémica",
-        x = "Tiempo desde inicio de síntomas",
-        y = "Número de casos"
-      ) +
-      theme_minimal(base_size = 14) +
-      theme(
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        panel.grid.minor = element_blank()
-      )
+    # Retornar el gráfico
+    print(p)
   })
   
   output$debug_info <- renderText({
@@ -1327,5 +1809,5 @@ server <- function(input, output, session) {
   })
 }
 shinyApp(ui, server)
-``` 
 
+``` 
