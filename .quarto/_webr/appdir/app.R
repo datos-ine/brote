@@ -1,7 +1,7 @@
 if (!requireNamespace("munsell", quietly = TRUE)) {
   install.packages("munsell", repos = "https://webr.r-wasm.org")
 }
-library(munsell, character.only = TRUE)
+library(munsell)
 
 library(shiny)
 library(bslib)
@@ -10,6 +10,28 @@ library(yaml)
 library(readr)
 library(dplyr)
 library(ggplot2)
+library(shinyjs)
+library(knitr)
+library(base64enc)
+
+# =========================================================
+# JAVASCRIPT PERSONALIZADO PARA DESCARGAS LOCALES
+# =========================================================
+# Este script crea un link invisible y descarga el contenido como un "Blob"
+# Esto funciona incluso si el Service Worker está desactivado.
+js_download_script <- "
+shinyjs.downloadFile = function(params) {
+    var element = document.createElement('a');
+    var blob = new Blob([params.content], {type: 'text/html'});
+    element.setAttribute('href', window.URL.createObjectURL(blob));
+    element.setAttribute('download', params.filename);
+    element.style.display = 'none';
+    document.body.appendChild(element);
+    element.click();
+    document.body.removeChild(element);
+};
+"
+
 
 # =========================
 # FUNCIONES AUXILIARES
@@ -465,6 +487,187 @@ generar_descripcion_univariada <- function(datos, variables_sociodem, config_var
   
   return(list(resultados = resultados, error = NULL))
 }
+
+# Función auxiliar para convertir resultados univariados a HTML para informe descargable
+convertir_univariada_a_html <- function(resultados) {
+  if (!is.null(resultados$error)) {
+    return("<p class='alert alert-warning'>Error: No hay datos disponibles</p>")
+  }
+  
+  html_parts <- lapply(resultados$resultados, function(res) {
+    if (res$tipo == "numérica") {
+      sprintf("
+        <div style='margin-bottom: 20px;'>
+          <h5><strong>%s</strong> (numérica%s)</h5>
+          <table class='table table-sm table-bordered' style='width: auto;'>
+            <tbody>
+              <tr><td>N válidos</td><td>%d</td></tr>
+              <tr><td>N faltantes</td><td>%d</td></tr>
+              <tr><td>Media</td><td>%.2f</td></tr>
+              <tr><td>Mediana</td><td>%.2f</td></tr>
+              <tr><td>Desv. Est.</td><td>%.2f</td></tr>
+              <tr><td>Mínimo</td><td>%.2f</td></tr>
+              <tr><td>Máximo</td><td>%.2f</td></tr>
+              <tr><td>Q1</td><td>%.2f</td></tr>
+              <tr><td>Q3</td><td>%.2f</td></tr>
+            </tbody>
+          </table>
+        </div>
+      ",
+      res$variable,
+      if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original) else "",
+      res$n,
+      res$n_faltantes,
+      res$media,
+      res$mediana,
+      res$desv_std,
+      res$min,
+      res$max,
+      res$q1,
+      res$q3
+      )
+    } else {
+      # Construir filas de la tabla
+      filas_html <- paste(sapply(seq_along(res$categorias), function(i) {
+        sprintf("<tr><td>%s</td><td>%d</td><td>%s%%</td></tr>",
+                as.character(res$categorias[i]),
+                res$frecuencias[i],
+                res$porcentajes[i])
+      }), collapse = "\n")
+      
+      sprintf("
+        <div style='margin-bottom: 20px;'>
+          <h5><strong>%s</strong> (categórica%s, %d categorías)</h5>
+          <table class='table table-sm table-bordered' style='width: auto;'>
+            <thead>
+              <tr><th>Categoría</th><th>Frecuencia</th><th>Porcentaje</th></tr>
+            </thead>
+            <tbody>
+              %s
+            </tbody>
+          </table>
+        </div>
+      ",
+      res$variable,
+      if(!is.null(res$tipo_original)) paste0(", original: ", res$tipo_original) else "",
+      res$n_categorias,
+      filas_html
+      )
+    }
+  })
+  
+  return(paste(html_parts, collapse = "\n"))
+}
+
+# Función para convertir tasas de ataque a HTML para informe
+convertir_tasas_a_html <- function(resultados_tasas) {
+  if (is.null(resultados_tasas) || length(resultados_tasas) == 0) {
+    return("<p class='alert alert-warning'>No se pudieron calcular tasas de ataque</p>")
+  }
+  
+  tablas_html <- lapply(names(resultados_tasas), function(exposicion) {
+    res <- resultados_tasas[[exposicion]]
+    
+    sprintf("
+      <div style='margin-bottom: 25px;'>
+        <h5><strong>%s</strong> (n=%d)</h5>
+        <table class='table table-sm table-bordered' style='width: auto;'>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Enfermos</th>
+              <th>Total</th>
+              <th>Tasa de ataque</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Expuestos</strong></td>
+              <td>%d</td>
+              <td>%d</td>
+              <td>%s</td>
+            </tr>
+            <tr>
+              <td><strong>No expuestos</strong></td>
+              <td>%d</td>
+              <td>%d</td>
+              <td>%s</td>
+            </tr>
+            <tr>
+              <td><strong>Riesgo Relativo (RR)</strong></td>
+              <td colspan='3'>%s</td>
+            </tr>
+            <tr>
+              <td><strong>Diferencia de Riesgo</strong></td>
+              <td colspan='3'>%s</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    ",
+    exposicion,
+    res$n_total,
+    res$casos_expuestos,
+    res$n_expuestos,
+    ifelse(!is.na(res$tasa_expuestos), sprintf("%.1f%%", res$tasa_expuestos * 100), "N/A"),
+    res$casos_no_expuestos,
+    res$n_no_expuestos,
+    ifelse(!is.na(res$tasa_no_expuestos), sprintf("%.1f%%", res$tasa_no_expuestos * 100), "N/A"),
+    ifelse(!is.na(res$riesgo_relativo), sprintf("%.2f", res$riesgo_relativo), "No calculable"),
+    ifelse(!is.na(res$diferencia_riesgo), sprintf("%.3f", res$diferencia_riesgo), "No calculable")
+    )
+  })
+  
+  return(paste(tablas_html, collapse = "\n"))
+}
+
+# Función para convertir odds ratio a HTML para informe
+convertir_or_a_html <- function(resultados_or) {
+  if (is.null(resultados_or) || length(resultados_or) == 0) {
+    return("<p class='alert alert-warning'>No se pudieron calcular odds ratios</p>")
+  }
+  
+  filas_html <- sapply(names(resultados_or), function(exposicion) {
+    res <- resultados_or[[exposicion]]
+    
+    sprintf("<tr><td><strong>%s</strong></td><td>%.2f</td><td>%s</td><td>%s</td><td>%s</td></tr>",
+            exposicion,
+            res$odds_ratio,
+            ifelse(!is.na(res$ic_95_inf), sprintf("[%.2f-%.2f]", res$ic_95_inf, res$ic_95_sup), "N/A"),
+            ifelse(!is.na(res$chi_cuadrado), sprintf("%.2f", res$chi_cuadrado), "N/A"),
+            ifelse(!is.na(res$p_valor), 
+                   ifelse(res$p_valor < 0.001, "<0.001", sprintf("%.3f", res$p_valor)), 
+                   "N/A")
+    )
+  })
+  
+  html_tabla <- sprintf("
+    <table class='table table-sm table-bordered table-striped'>
+      <thead>
+        <tr>
+          <th>Exposición</th>
+          <th>Odds Ratio</th>
+          <th>IC 95%%</th>
+          <th>Chi²</th>
+          <th>Valor p</th>
+        </tr>
+      </thead>
+      <tbody>
+        %s
+      </tbody>
+    </table>
+    <div class='alert alert-info' style='margin-top: 15px;'>
+      <small>
+        <strong>Interpretación:</strong>
+        OR > 1: asociación positiva (mayor riesgo), OR < 1: asociación negativa (menor riesgo), 
+        OR = 1: no asociación. IC 95%% que no incluye 1 indica significancia estadística.
+      </small>
+    </div>
+  ", paste(filas_html, collapse = "\n"))
+  
+  return(html_tabla)
+}
+
 
 render_univariada <- function(resultados) {
   
@@ -1019,23 +1222,41 @@ render_tabla_or <- function(resultados_or) {
   )
 }
 
+# Convierte un gráfico ggplot en una etiqueta <img> con base64
+# Función para convertir gráficos a Base64 de forma segura
+plot_to_b64 <- function(p) {
+  if (is.null(p)) return(NULL)
+  tmp <- tempfile(fileext = ".png")
+  # Ajustamos dimensiones para el informe
+  ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+  encoded <- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
+  unlink(tmp)
+  return(paste0("data:image/png;base64,", encoded))
+}
+
 # =========================
 # UI
 # =========================
 
 ui <- fluidPage(
   theme = bs_theme(version = 5, bootswatch = "flatly"),
-  
+  useShinyjs(),
+  extendShinyjs(text = js_download_script, functions = c("downloadFile")),
   titlePanel(""),
   
   sidebarLayout(
     sidebarPanel(
       width = 3,
-      fileInput("datos", "Subir CSV", accept = c(".csv", ".txt")),
-      fileInput("yaml", "Subir YAML", accept = c(".yaml", ".yml")),
+      fileInput("datos", "1. Seleccionar Datos (csv o txt)", accept = c(".csv", ".txt")),
+      fileInput("yaml", "2. Seleccionar Configuración (yaml)", accept = c(".yaml", ".yml")),
       checkboxInput("debug", "Modo debug", value = FALSE),
       actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
+      actionButton("limpiar", "Limpiar todo", class = "btn-warning w-100 mt-2"),
       hr(),
+      # Usamos un actionButton normal en lugar de downloadButton para mayor control
+      hidden(
+        actionButton("btn_descargar_js", "Descargar Informe HTML", class = "btn-success w-100")
+      ),
       h5("Estado de carga:"),
       verbatimTextOutput("debug_info"),
       verbatimTextOutput("debug_tipos")
@@ -1059,7 +1280,12 @@ server <- function(input, output, session) {
     datos = NULL,
     solicitud = NULL,
     ejecutado = FALSE,
-    resultados_or = NULL  # Para almacenar resultados de OR
+    resultados_or = NULL,  # Para almacenar resultados de OR
+    desc = NULL,
+    resultados_tasas = NULL,
+    grafico_or = NULL,
+    grafico_curva = NULL,
+    listo = FALSE
   )
   
   observeEvent(input$datos, {
@@ -1067,6 +1293,8 @@ server <- function(input, output, session) {
       estado$datos <- read_delim(input$datos$datapath, delim = ";", 
                                 locale = locale(decimal_mark = ","),
                                 show_col_types = FALSE)
+      # RESET CLAVE: Si cargan datos nuevos, el informe anterior desaparece
+      estado$ejecutado <- FALSE 
       showNotification("✓ Datos CSV cargados", type = "message")
     }, error = function(e) {
       tryCatch({
@@ -1082,12 +1310,29 @@ server <- function(input, output, session) {
   observeEvent(input$yaml, {
     tryCatch({
       estado$solicitud <- read_yaml(input$yaml$datapath)
+      estado$ejecutado <- FALSE # RESET CLAVE
       showNotification("✓ YAML cargado", type = "message")
     }, error = function(e) {
       showNotification(paste("Error al leer YAML:", e$message), type = "error")
       estado$solicitud <- NULL
     })
   })
+  
+  # BOTÓN LIMPIAR: Reset total
+  observeEvent(input$limpiar, {
+    estado$datos <- NULL
+    estado$solicitud <- NULL
+    estado$ejecutado <- FALSE
+    estado$resultados_or <- NULL
+    estado$desc <- NULL
+    estado$resultados_tasas <- NULL
+    estado$grafico_or <- NULL
+    estado$grafico_curva <- NULL
+    reset("datos")
+    reset("yaml")
+    showNotification("Vista limpiada", type = "warning")
+  })
+
   
   errores_yaml <- reactive({
     req(estado$solicitud)
@@ -1207,6 +1452,8 @@ server <- function(input, output, session) {
       return(list(error = "Debe cargar un archivo YAML"))
     }
     
+    estado$ejecutado <- TRUE # Se marca como ejecutado tras procesar
+    
     err_yaml <- errores_yaml()
     if (length(err_yaml) > 0) {
       return(list(error = paste("Errores en YAML:\n", colapsar_errores(err_yaml))))
@@ -1224,7 +1471,6 @@ server <- function(input, output, session) {
       productos <- unlist(productos_esperados, use.names = FALSE)
     }
     
-    estado$ejecutado <- TRUE
     
     # Crear variables intermedias si están configuradas
     datos_procesados <- estado$datos
@@ -1237,6 +1483,8 @@ server <- function(input, output, session) {
         vars_yaml = estado$solicitud$variables  # Pasar las variables del YAML
       )
     }
+    
+    show("btn_descargar_js")
     
     list(
       datos = datos_procesados,
@@ -1270,6 +1518,7 @@ server <- function(input, output, session) {
   })
   
   output$resultado <- renderUI({
+    if (!estado$ejecutado) return(NULL)
     req(input$ejecutar > 0)
     
     info <- informe()
@@ -1361,7 +1610,10 @@ server <- function(input, output, session) {
       config_variables = info$config_variables
     )
     
+    estado$desc <- desc
+    
     render_univariada(desc)
+    
   })
   
   output$tabla_tasas <- renderUI({
@@ -1414,6 +1666,8 @@ server <- function(input, output, session) {
       variable_participo = variable_participo,
       debug = input$debug
     )
+    
+    estado$resultados_tasas <- resultados_tasas
     
     render_tabla_tasas(resultados_tasas)
   })
@@ -1522,7 +1776,10 @@ server <- function(input, output, session) {
     }
     
     # Crear el forest plot
-    crear_forest_plot(estado$resultados_or)
+    estado$grafico_or <- crear_forest_plot(estado$resultados_or)
+    
+    print(estado$grafico_or)
+    
   })
   
   output$plot_curva <- renderPlot({
@@ -1631,7 +1888,7 @@ server <- function(input, output, session) {
       # Crear gráfico de barras con fechas
       # width = 1 para barras pegadas, sin color de borde
       p <- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
-        geom_col(fill = "steelblue", alpha = 0.8, width = 1)
+        geom_col(fill = "steelblue", color = "white", alpha = 0.8, width = 1)
       
       # Agregar líneas horizontales si hay datos
       if (nrow(datos_lineas) > 0) {
@@ -1709,7 +1966,7 @@ server <- function(input, output, session) {
       # Crear gráfico de barras con horas
       # width = 1 para barras pegadas, sin color de borde
       p <- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
-        geom_col(fill = "steelblue", alpha = 0.8, width = 1)
+        geom_col(fill = "steelblue", color = "white", alpha = 0.8, width = 1)
       
       # Agregar líneas horizontales si hay datos
       if (nrow(datos_lineas) > 0) {
@@ -1749,6 +2006,8 @@ server <- function(input, output, session) {
       return()
     }
     
+    estado$grafico_curva <- p
+    
     # Retornar el gráfico
     print(p)
   })
@@ -1758,8 +2017,104 @@ server <- function(input, output, session) {
       "CSV: ", if(is.null(estado$datos)) "❌" else "✓",
       "\nYAML: ", if(is.null(estado$solicitud)) "❌" else "✓",
       "\nFilas: ", if(!is.null(estado$datos)) nrow(estado$datos) else "0",
-      "\nColumnas: ", if(!is.null(estado$datos)) paste(names(estado$datos), collapse=", ") else "N/A"
+      "\nColumnas: ", if(!is.null(estado$datos)) paste(names(estado$datos), collapse=", ") else "N/A",
+      "\nEjecutado: ", estado$ejecutado
     )
   })
+  
+  # --- LÓGICA DE DESCARGA VÍA JAVASCRIPT ---
+observeEvent(input$btn_descargar_js, {
+  showNotification("Preparando documento...", type = "message")
+  
+  # Función interna para convertir gráficos a Base64
+  get_b64 <- function(p) {
+    if (is.null(p)) return(NULL)
+    tryCatch({
+      tmp <- tempfile(fileext = ".png")
+      ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+      res <- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
+      unlink(tmp)
+      paste0("data:image/png;base64,", res)
+    }, error = function(e) NULL)
+  }
+
+  # 1. Procesar gráficos
+  forest_img <- get_b64(estado$grafico_or)
+  curva_img  <- get_b64(estado$grafico_curva)
+  
+    # 2. Procesar tablas (convertir a HTML string directamente)
+  tabla_desc_html <- if(!is.null(estado$desc)) {
+    convertir_univariada_a_html(estado$desc)
+  } else { 
+    "<p>No hay datos de descriptivos disponibles.</p>"
+  }
+  
+  tabla_tasas_html <- if(!is.null(estado$resultados_tasas)) {
+    convertir_tasas_a_html(estado$resultados_tasas)
+  } else { 
+    "<p>No hay datos de tasas de ataque disponibles.</p>"
+  }
+
+  tabla_or_html <- if(!is.null(estado$resultados_or)) {
+    convertir_or_a_html(estado$resultados_or)
+  } else { 
+    "<p>No hay datos de Odds Ratio disponibles.</p>"
+  }
+  
+  # 3. Construir el cuerpo del informe dinámicamente
+  contenido <- list(
+    h1("Informe de Investigación de Brote", style="text-align:center; color:#2c3e50;"),
+    p(tags$b("Fecha: "), format(Sys.time(), "%d/%m/%Y %H:%M")),
+    hr(),
+    h2("1. Descripción univariada"),
+    HTML(tabla_desc_html),
+    br()
+  )
+  
+  # Añadir tasas
+  contenido <- c(contenido, list(
+    h2("2. Tasas de ataque por exposición"),
+    HTML(tabla_tasas_html)
+  ))
+  
+  contenido <- c(contenido, list(
+    h2("3. Tabla de Odds Ratio"),
+    HTML(tabla_or_html)
+  ))
+  
+    # Añadir Forest Plot solo si existe
+  if(!is.null(forest_img)) {
+    contenido <- c(contenido, list(
+      h2("4. Forest Plot"),
+      img(src = forest_img, style="width:100%; border:1px solid #eee;")
+    ))
+  }
+
+    # Añadir Curva solo si existe
+  if(!is.null(curva_img)) {
+    contenido <- c(contenido, list(
+      h2("5. Curva Epidémica"),
+      img(src = curva_img, style="width:100%; border:1px solid #eee;")
+    ))
+  }
+  
+  # 4. Ensamble final y descarga
+  doc_final <- tags$html(
+    tags$head(
+      tags$meta(charset = "utf-8"),
+      tags$style("body{font-family:sans-serif; margin:40px; line-height:1.6;} 
+                  table{width:100%; border-collapse:collapse; margin:15px 0;} 
+                  th,td{border:1px solid #ddd; padding:10px; text-align:left;}
+                  th{background:#f8f9fa;} h2{color:#2980b9; border-left:4px solid #2980b9; padding-left:10px; margin-top:30px;}")
+    ),
+    do.call(tags$body, contenido)
+  )
+
+  js$downloadFile(
+    filename = paste0("informe_", format(Sys.time(), "%Y%m%d_%H%M"), ".html"),
+    content = as.character(doc_final)
+  )
+})
 }
+
 shinyApp(ui, server)
