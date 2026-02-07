@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
 
 <meta charset="utf-8">
-<meta name="generator" content="quarto-1.8.25">
+<meta name="generator" content="quarto-1.8.21">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
@@ -31,7 +31,7 @@ ul.task-list li input[type="checkbox"] {
 <script src="index_files/libs/quarto-html/tippy.umd.min.js"></script>
 <script src="index_files/libs/quarto-html/anchor.min.js"></script>
 <link href="index_files/libs/quarto-html/tippy.css" rel="stylesheet">
-<link href="index_files/libs/quarto-html/quarto-syntax-highlighting-7b89279ff1a6dce999919e0e67d4d9ec.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<link href="index_files/libs/quarto-html/quarto-syntax-highlighting-ea1d7ac60288e0f1efdbc993fd8432ae.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="index_files/libs/bootstrap/bootstrap.min.js"></script>
 <link href="index_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
 <link href="index_files/libs/bootstrap/bootstrap-bf71b591a9d31b6585383f83b4bcc134.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
@@ -95,10 +95,9 @@ library(htmltools)
 library(yaml)
 library(readr)
 library(dplyr)
-library(ggplot2)
 library(shinyjs)
 library(knitr)
-library(base64enc)
+
 
 # =========================================================
 # JAVASCRIPT PERSONALIZADO PARA DESCARGAS LOCALES
@@ -148,6 +147,7 @@ determinar_tipo_variable &lt;- function(col, tipo_especificado = NA) {
   
   return("cuantitativa")
 }
+
 
 # =========================
 # FUNCIÓN: CREAR VARIABLES INTERMEDIAS
@@ -753,6 +753,104 @@ convertir_or_a_html &lt;- function(resultados_or) {
   
   return(html_tabla)
 }
+# ===========================================================================
+# NUEVAS FUNCIONES PARA FRECUENCIA_COMBINADA_SINTOMAS
+# ===========================================================================
+
+# Función para calcular frecuencia combinada de síntomas
+calcular_frecuencia_combinada_sintomas &lt;- function(datos, vars_sintomas) {
+  if (is.null(vars_sintomas) || length(vars_sintomas) == 0) {
+    return(list(error = "No hay variables de síntomas definidas"))
+  }
+  
+  # Extraer nombres de variables de síntomas
+  nombres_sintomas &lt;- sapply(vars_sintomas, function(s) {
+    if (is.list(s) &amp;&amp; !is.null(s$nombre)) {
+      return(s$nombre)
+    } else if (is.character(s)) {
+      return(s)
+    }
+    return(NA)
+  })
+  
+  # Filtrar NAs
+  nombres_sintomas &lt;- nombres_sintomas[!is.na(nombres_sintomas)]
+  
+  # Verificar que las variables existan en los datos
+  sintomas_validos &lt;- nombres_sintomas[nombres_sintomas %in% names(datos)]
+  
+  if (length(sintomas_validos) == 0) {
+    return(list(error = "Ninguna variable de síntomas encontrada en los datos"))
+  }
+  
+  # Convertir todas las variables a lógico
+  datos_sintomas &lt;- datos[, sintomas_validos, drop = FALSE]
+  datos_sintomas &lt;- as.data.frame(lapply(datos_sintomas, convertir_a_logico))
+  
+  # Crear combinaciones como string (ej: "fiebre + nauseas")
+  datos_sintomas$combinacion &lt;- apply(datos_sintomas, 1, function(row) {
+    sintomas_presentes &lt;- names(row)[row == TRUE &amp; !is.na(row)]
+    if (length(sintomas_presentes) == 0) {
+      return("Ningún síntoma")
+    } else {
+      return(paste(sintomas_presentes, collapse = " + "))
+    }
+  })
+  
+  # Contar frecuencias de cada combinación
+  tabla_freq &lt;- as.data.frame(table(datos_sintomas$combinacion))
+  colnames(tabla_freq) &lt;- c("Combinacion_sintomas", "Frecuencia")
+  
+  # Calcular porcentaje
+  tabla_freq$Porcentaje &lt;- round(100 * tabla_freq$Frecuencia / sum(tabla_freq$Frecuencia), 2)
+  
+  # Ordenar de mayor a menor frecuencia
+  tabla_freq &lt;- tabla_freq[order(-tabla_freq$Frecuencia), ]
+  rownames(tabla_freq) &lt;- NULL
+  
+  return(tabla_freq)
+}
+
+# Función para convertir frecuencia combinada a HTML
+convertir_frec_combinada_a_html &lt;- function(tabla_freq) {
+  if (is.null(tabla_freq)) {
+    return("&lt;p class='alert alert-warning'&gt;No se pudo calcular la frecuencia combinada de síntomas&lt;/p&gt;")
+  }
+  
+  if (!is.null(tabla_freq$error)) {
+    return(sprintf("&lt;p class='alert alert-warning'&gt;%s&lt;/p&gt;", tabla_freq$error))
+  }
+  
+  filas_html &lt;- apply(tabla_freq, 1, function(row) {
+    sprintf("&lt;tr&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;%s&lt;/td&gt;&lt;td&gt;%.2f%%&lt;/td&gt;&lt;/tr&gt;",
+            row["Combinacion_sintomas"],
+            row["Frecuencia"],
+            as.numeric(row["Porcentaje"]))
+  })
+  
+  html_tabla &lt;- sprintf("
+    &lt;table class='table table-sm table-bordered table-striped'&gt;
+      &lt;thead&gt;
+        &lt;tr&gt;
+          &lt;th&gt;Combinación de síntomas&lt;/th&gt;
+          &lt;th&gt;Frecuencia&lt;/th&gt;
+          &lt;th&gt;Porcentaje&lt;/th&gt;
+        &lt;/tr&gt;
+      &lt;/thead&gt;
+      &lt;tbody&gt;
+        %s
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;div class='alert alert-info' style='margin-top: 15px;'&gt;
+      &lt;small&gt;
+        &lt;strong&gt;Nota:&lt;/strong&gt; Esta tabla muestra las combinaciones de síntomas presentes en los casos,
+        ordenadas de mayor a menor frecuencia.
+      &lt;/small&gt;
+    &lt;/div&gt;
+  ", paste(filas_html, collapse = "\n"))
+  
+  return(html_tabla)
+}
 
 
 render_univariada &lt;- function(resultados) {
@@ -1183,8 +1281,8 @@ crear_forest_plot &lt;- function(resultados_or) {
       plot.caption = element_text(size = 10, color = "gray50", hjust = 0)
     ) +
     geom_text(aes(label = sprintf("%.2f [%.2f-%.2f]", OR, LI, LS),
-                  x = max_lim * 0.9),
-              hjust = 1, size = 3.5, color = "black")
+                  x = max_lim * 0.9), 
+              hjust = 1, vjust = 0, size = 3.5, color = "black")
   
   return(p)
 }
@@ -1312,6 +1410,7 @@ render_tabla_or &lt;- function(resultados_or) {
 # Función para convertir gráficos a Base64 de forma segura
 plot_to_b64 &lt;- function(p) {
   if (is.null(p)) return(NULL)
+  library(base64enc)
   tmp &lt;- tempfile(fileext = ".png")
   # Ajustamos dimensiones para el informe
   ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
@@ -1670,6 +1769,16 @@ server &lt;- function(input, output, session) {
         hr()
       )
     }
+
+    if (length(productos) &gt; 0 &amp;&amp; "frecuencia_combinada_sintomas" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Frecuencia combinada de síntomas", style = "color: #34495e;"),
+        p("Combinaciones de síntomas presentes en los casos:"),
+        uiOutput("tabla_freq_combinada"),
+        hr()
+      )
+    }
     
     return(elementos)
   })
@@ -1862,6 +1971,7 @@ server &lt;- function(input, output, session) {
     }
     
     # Crear el forest plot
+    library(ggplot2)
     estado$grafico_or &lt;- crear_forest_plot(estado$resultados_or)
     
     print(estado$grafico_or)
@@ -1880,7 +1990,7 @@ server &lt;- function(input, output, session) {
     if (!"curva_epidemica" %in% info$productos) {
       return(NULL)
     }
-    
+    library(ggplot2)
     datos &lt;- info$datos
     var_inicio &lt;- info$vars$variable_tiempo_inicio
     
@@ -1894,6 +2004,71 @@ server &lt;- function(input, output, session) {
     
     # Detectar el tipo de dato de la variable de tiempo
     dato_tiempo &lt;- datos[[var_inicio]]
+
+  output$tabla_freq_combinada &lt;- renderUI({
+    req(input$ejecutar &gt; 0)
+    
+    info &lt;- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars &lt;- info$vars
+    
+    if (is.null(vars$sintomas)) {
+      return(div(
+        class = "alert alert-warning",
+        "No hay variables de síntomas definidas en el YAML"
+      ))
+    }
+    
+    # Calcular frecuencia combinada de síntomas
+    tabla_freq &lt;- calcular_frecuencia_combinada_sintomas(
+      datos = info$datos,
+      vars_sintomas = vars$sintomas
+    )
+    
+    # Almacenar resultados para la descarga
+    estado$freq_combinada &lt;- tabla_freq
+    
+    # Renderizar tabla
+    if (!is.null(tabla_freq$error)) {
+      return(div(
+        class = "alert alert-warning",
+        tabla_freq$error
+      ))
+    }
+    
+    # Crear tabla HTML
+    filas &lt;- apply(tabla_freq, 1, function(row) {
+      tags$tr(
+        tags$td(row["Combinacion_sintomas"]),
+        tags$td(row["Frecuencia"], style = "text-align: center;"),
+        tags$td(paste0(row["Porcentaje"], "%"), style = "text-align: center;")
+      )
+    })
+    
+    tags$div(
+      class = "table-responsive",
+      tags$table(
+        class = "table table-sm table-bordered table-striped",
+        tags$thead(
+          tags$tr(
+            tags$th("Combinación de síntomas"),
+            tags$th("Frecuencia", style = "text-align: center;"),
+            tags$th("Porcentaje", style = "text-align: center;")
+          )
+        ),
+        tags$tbody(filas)
+      ),
+      tags$div(
+        class = "alert alert-info",
+        style = "margin-top: 15px;",
+        tags$small(
+          tags$strong("Nota:"), " Esta tabla muestra las combinaciones de síntomas presentes en los casos, ordenadas de mayor a menor frecuencia."
+        )
+      )
+    )
+  })
     
     # Verificar si hay configuración explícita de unidad de tiempo
     unidad_tiempo_config &lt;- NULL
@@ -1974,7 +2149,7 @@ server &lt;- function(input, output, session) {
       # Crear gráfico de barras con fechas
       # width = 1 para barras pegadas, sin color de borde
       p &lt;- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
-        geom_col(fill = "steelblue", color = "white", alpha = 0.8, width = 1)
+        geom_col(fill = "#006666", color = "white", alpha = 0.8, width = 1)
       
       # Agregar líneas horizontales si hay datos
       if (nrow(datos_lineas) &gt; 0) {
@@ -1992,6 +2167,10 @@ server &lt;- function(input, output, session) {
           date_breaks = "1 day",
           date_labels = "%d/%m",
           expand = expansion(mult = c(0.05, 0.05))
+        ) +
+        scale_y_continuous(
+          breaks = function(x) seq(0, ceiling(max(x)), by = 1),
+          expand = expansion(mult = c(0, 0.05))
         ) +
         labs(
           title = "Curva epidémica",
@@ -2052,7 +2231,7 @@ server &lt;- function(input, output, session) {
       # Crear gráfico de barras con horas
       # width = 1 para barras pegadas, sin color de borde
       p &lt;- ggplot(datos_count_completo, aes(x = tiempo, y = n_casos)) +
-        geom_col(fill = "steelblue", color = "white", alpha = 0.8, width = 1)
+        geom_col(fill = "#006666", color = "white", alpha = 0.8, width = 1)
       
       # Agregar líneas horizontales si hay datos
       if (nrow(datos_lineas) &gt; 0) {
@@ -2071,6 +2250,10 @@ server &lt;- function(input, output, session) {
                       ceiling(max(datos_count$tiempo)), 
                       by = 1),
           expand = expansion(mult = c(0.05, 0.05))
+        ) +
+        scale_y_continuous(
+          breaks = function(x) seq(0, ceiling(max(x)), by = 1),
+          expand = expansion(mult = c(0, 0.05))
         ) +
         labs(
           title = "Curva epidémica",
@@ -2147,6 +2330,12 @@ observeEvent(input$btn_descargar_js, {
     "&lt;p&gt;No hay datos de Odds Ratio disponibles.&lt;/p&gt;"
   }
   
+  tabla_freq_comb_html &lt;- if(!is.null(estado$freq_combinada)) {
+    convertir_frec_combinada_a_html(estado$freq_combinada)
+  } else { 
+    "&lt;p&gt;No hay datos de frecuencia combinada de síntomas disponibles.&lt;/p&gt;"
+  }
+  
   # 3. Construir el cuerpo del informe dinámicamente
   contenido &lt;- list(
     h1("Informe de Investigación de Brote", style="text-align:center; color:#2c3e50;"),
@@ -2168,10 +2357,15 @@ observeEvent(input$btn_descargar_js, {
     HTML(tabla_or_html)
   ))
   
+  contenido &lt;- c(contenido, list(
+    h2("4. Frecuencia combinada de síntomas"),
+    HTML(tabla_freq_comb_html)
+  ))
+  
     # Añadir Forest Plot solo si existe
   if(!is.null(forest_img)) {
     contenido &lt;- c(contenido, list(
-      h2("4. Forest Plot"),
+      h2("5. Forest Plot"),
       img(src = forest_img, style="width:100%; border:1px solid #eee;")
     ))
   }
@@ -2179,7 +2373,7 @@ observeEvent(input$btn_descargar_js, {
     # Añadir Curva solo si existe
   if(!is.null(curva_img)) {
     contenido &lt;- c(contenido, list(
-      h2("5. Curva Epidémica"),
+      h2("6. Curva Epidémica"),
       img(src = curva_img, style="width:100%; border:1px solid #eee;")
     ))
   }
@@ -2259,14 +2453,13 @@ shinyApp(ui, server)
       e.clearSelection();
     }
     const getTextToCopy = function(trigger) {
-      const outerScaffold = trigger.parentElement.cloneNode(true);
-      const codeEl = outerScaffold.querySelector('code');
-      for (const childEl of codeEl.children) {
-        if (isCodeAnnotation(childEl)) {
-          childEl.remove();
+        const codeEl = trigger.previousElementSibling.cloneNode(true);
+        for (const childEl of codeEl.children) {
+          if (isCodeAnnotation(childEl)) {
+            childEl.remove();
+          }
         }
-      }
-      return codeEl.innerText;
+        return codeEl.innerText;
     }
     const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
       text: getTextToCopy
