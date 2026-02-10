@@ -25,7 +25,6 @@ shinylive:
     - "munsell"
     - "ggplot2"
     - "shinyjs"
-    - "knitr"
     - "base64enc"
   preload: false
   include-dependencies: true
@@ -47,20 +46,20 @@ filters:
 #| warning: false
 #| message: false
 
-if (!requireNamespace("munsell", quietly = TRUE)) {
-  install.packages("munsell", repos = "https://webr.r-wasm.org")
-}
+# if (!requireNamespace("munsell", quietly = TRUE)) {
+#   install.packages("munsell", repos = "https://webr.r-wasm.org")
+# }
 library(munsell)
 
 library(shiny)
 library(bslib)
 library(htmltools)
+library(dplyr)
 library(yaml)
 library(readr)
-library(dplyr)
 library(shinyjs)
-library(knitr)
 
+debug = FALSE
 
 # =========================================================
 # JAVASCRIPT PERSONALIZADO PARA DESCARGAS LOCALES
@@ -962,9 +961,9 @@ calcular_tasas_ataque <- function(datos, variable_evento, variables_exposicion, 
   }
   
   if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
-    datos <- datos %>% 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %>%
-      filter(participa == TRUE) %>%
+    datos <- datos |> 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |>
+      filter(participa == TRUE) |>
       select(-participa)
     
     if (debug) {
@@ -986,11 +985,11 @@ calcular_tasas_ataque <- function(datos, variable_evento, variables_exposicion, 
       analizar_valores_logicos(datos[[exposicion]], exposicion)
     }
     
-    datos_exp <- datos %>%
+    datos_exp <- datos |>
       mutate(
         evento = convertir_a_logico(.data[[variable_evento]]),
         expos = convertir_a_logico(.data[[exposicion]])
-      ) %>%
+      ) |>
       filter(!is.na(evento) & !is.na(expos))
     
     if (debug) {
@@ -1071,9 +1070,9 @@ calcular_odds_ratio <- function(datos, variable_evento, variables_exposicion, va
   }
   
   if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
-    datos <- datos %>% 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %>%
-      filter(participa == TRUE) %>%
+    datos <- datos |> 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |>
+      filter(participa == TRUE) |>
       select(-participa)
     
     if (debug) {
@@ -1095,11 +1094,11 @@ calcular_odds_ratio <- function(datos, variable_evento, variables_exposicion, va
       analizar_valores_logicos(datos[[exposicion]], exposicion)
     }
     
-    datos_exp <- datos %>%
+    datos_exp <- datos |>
       mutate(
         evento = convertir_a_logico(.data[[variable_evento]]),
         expos = convertir_a_logico(.data[[exposicion]])
-      ) %>%
+      ) |>
       filter(!is.na(evento) & !is.na(expos))
     
     if (debug) {
@@ -1376,7 +1375,7 @@ plot_to_b64 <- function(p) {
   library(base64enc)
   tmp <- tempfile(fileext = ".png")
   # Ajustamos dimensiones para el informe
-  ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+  ggsave(tmp, plot = p, width = 6, height = 4, dpi = 200)
   encoded <- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
   unlink(tmp)
   return(paste0("data:image/png;base64,", encoded))
@@ -1397,7 +1396,8 @@ ui <- fluidPage(
       width = 3,
       fileInput("datos", "1. Seleccionar Datos (csv o txt)", accept = c(".csv", ".txt")),
       fileInput("yaml", "2. Seleccionar Configuración (yaml)", accept = c(".yaml", ".yml")),
-      checkboxInput("debug", "Modo debug", value = FALSE),
+      #checkboxInput("debug", "Modo debug", value = FALSE),
+      hr(),
       actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
       actionButton("limpiar", "Limpiar todo", class = "btn-warning w-100 mt-2"),
       hr(),
@@ -1438,7 +1438,7 @@ server <- function(input, output, session) {
   
   observeEvent(input$datos, {
     tryCatch({
-      estado$datos <- read_delim(input$datos$datapath, delim = ";", 
+      estado$datos <- readr::read_delim(input$datos$datapath, delim = ";", 
                                 locale = locale(decimal_mark = ","),
                                 show_col_types = FALSE)
       # RESET CLAVE: Si cargan datos nuevos, el informe anterior desaparece
@@ -1446,7 +1446,7 @@ server <- function(input, output, session) {
       showNotification("✓ Datos CSV cargados", type = "message")
     }, error = function(e) {
       tryCatch({
-        estado$datos <- read_csv(input$datos$datapath, show_col_types = FALSE)
+        estado$datos <- readr::read_csv(input$datos$datapath, show_col_types = FALSE)
         showNotification("✓ Datos CSV cargados", type = "message")
       }, error = function(e2) {
         showNotification(paste("Error al leer CSV:", e2$message), type = "error")
@@ -1457,7 +1457,7 @@ server <- function(input, output, session) {
   
   observeEvent(input$yaml, {
     tryCatch({
-      estado$solicitud <- read_yaml(input$yaml$datapath)
+      estado$solicitud <- yaml::read_yaml(input$yaml$datapath)
       estado$ejecutado <- FALSE # RESET CLAVE
       showNotification("✓ YAML cargado", type = "message")
     }, error = function(e) {
@@ -1801,7 +1801,7 @@ server <- function(input, output, session) {
       ))
     }
     
-    if (input$debug) {
+    if (debug) {
       cat("\n=== DEBUG TASAS DE ATAQUE ===\n")
       cat("Variable evento:", variable_evento, "\n")
       cat("Variable participo:", variable_participo, "\n")
@@ -1822,7 +1822,7 @@ server <- function(input, output, session) {
       variable_evento = variable_evento,
       variables_exposicion = variables_exposicion,
       variable_participo = variable_participo,
-      debug = input$debug
+      debug = FALSE #input$debug
     )
     
     estado$resultados_tasas <- resultados_tasas
@@ -1857,7 +1857,7 @@ server <- function(input, output, session) {
       ))
     }
     
-    if (input$debug) {
+    if (debug) {
       cat("\n=== DEBUG ODDS RATIO ===\n")
       cat("Variable evento:", variable_evento, "\n")
       cat("Variable participo:", variable_participo, "\n")
@@ -1891,13 +1891,13 @@ server <- function(input, output, session) {
       variable_evento = variable_evento,
       variables_exposicion = variables_exposicion,
       variable_participo = variable_participo,
-      debug = input$debug
+      debug = FALSE #input$debug
     )
     
     # Almacenar resultados para el forest plot
     estado$resultados_or <- resultados_or
     
-    if (input$debug && length(resultados_or) > 0) {
+    if (debug && length(resultados_or) > 0) {
       cat("\n=== RESULTADOS ODDS RATIO ===\n")
       for (exp in names(resultados_or)) {
         cat("\nExposición:", exp, "\n")
@@ -2067,8 +2067,8 @@ server <- function(input, output, session) {
     # Preparar datos según el tipo
     if (es_fecha) {
       # Manejo de fechas
-      datos_plot <- datos %>%
-        mutate(tiempo = as.Date(.data[[var_inicio]])) %>%
+      datos_plot <- datos |>
+        mutate(tiempo = as.Date(.data[[var_inicio]])) |>
         filter(!is.na(tiempo))
       
       if (nrow(datos_plot) == 0) {
@@ -2080,18 +2080,18 @@ server <- function(input, output, session) {
       }
       
       # Contar casos por fecha
-      datos_count <- datos_plot %>%
-        group_by(tiempo) %>%
+      datos_count <- datos_plot |>
+        group_by(tiempo) |>
         summarise(n_casos = n(), .groups = "drop")
       
       # Completar todas las fechas del rango (incluir fechas sin casos)
       rango_fechas <- seq(min(datos_count$tiempo), max(datos_count$tiempo), by = "1 day")
-      datos_count_completo <- data.frame(tiempo = rango_fechas) %>%
-        left_join(datos_count, by = "tiempo") %>%
+      datos_count_completo <- data.frame(tiempo = rango_fechas) |>
+        left_join(datos_count, by = "tiempo") |>
         mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
       
       # Crear datos para líneas horizontales (sin usar crossing de tidyr)
-      datos_lineas <- datos_count_completo %>%
+      datos_lineas <- datos_count_completo |>
         filter(n_casos > 1)
       
       if (nrow(datos_lineas) > 0) {
@@ -2149,8 +2149,8 @@ server <- function(input, output, session) {
       
     } else if (es_hora) {
       # Manejo de horas (numérico)
-      datos_plot <- datos %>%
-        mutate(tiempo = as.numeric(.data[[var_inicio]])) %>%
+      datos_plot <- datos |>
+        mutate(tiempo = as.numeric(.data[[var_inicio]])) |>
         filter(!is.na(tiempo))
       
       if (nrow(datos_plot) == 0) {
@@ -2162,18 +2162,18 @@ server <- function(input, output, session) {
       }
       
       # Contar casos por hora
-      datos_count <- datos_plot %>%
-        group_by(tiempo) %>%
+      datos_count <- datos_plot |>
+        group_by(tiempo) |>
         summarise(n_casos = n(), .groups = "drop")
       
       # Completar todas las horas del rango (incluir horas sin casos)
       rango_horas <- seq(floor(min(datos_count$tiempo)), ceiling(max(datos_count$tiempo)), by = 1)
-      datos_count_completo <- data.frame(tiempo = rango_horas) %>%
-        left_join(datos_count, by = "tiempo") %>%
+      datos_count_completo <- data.frame(tiempo = rango_horas) |>
+        left_join(datos_count, by = "tiempo") |>
         mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
       
       # Crear datos para líneas horizontales (sin usar crossing de tidyr)
-      datos_lineas <- datos_count_completo %>%
+      datos_lineas <- datos_count_completo |>
         filter(n_casos > 1)
       
       if (nrow(datos_lineas) > 0) {
@@ -2263,7 +2263,7 @@ observeEvent(input$btn_descargar_js, {
     if (is.null(p)) return(NULL)
     tryCatch({
       tmp <- tempfile(fileext = ".png")
-      ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+      ggsave(tmp, plot = p, width = 6, height = 3, dpi = 150)
       res <- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
       unlink(tmp)
       paste0("data:image/png;base64,", res)
@@ -2304,31 +2304,31 @@ observeEvent(input$btn_descargar_js, {
     h1("Informe de Investigación de Brote", style="text-align:center; color:#2c3e50;"),
     p(tags$b("Fecha: "), format(Sys.time(), "%d/%m/%Y %H:%M")),
     hr(),
-    h2("1. Descripción univariada"),
+    h2("Descripción univariada"),
     HTML(tabla_desc_html),
     br()
   )
   
   # Añadir tasas
   contenido <- c(contenido, list(
-    h2("2. Tasas de ataque por exposición"),
+    h2("Tasas de ataque por exposición"),
     HTML(tabla_tasas_html)
   ))
   
   contenido <- c(contenido, list(
-    h2("3. Tabla de Odds Ratio"),
+    h2("Tabla de Odds Ratio"),
     HTML(tabla_or_html)
   ))
   
   contenido <- c(contenido, list(
-    h2("4. Frecuencia combinada de síntomas"),
+    h2("Frecuencia combinada de síntomas"),
     HTML(tabla_freq_comb_html)
   ))
   
     # Añadir Forest Plot solo si existe
   if(!is.null(forest_img)) {
     contenido <- c(contenido, list(
-      h2("5. Forest Plot"),
+      h2("Forest Plot"),
       img(src = forest_img, style="width:100%; border:1px solid #eee;")
     ))
   }
@@ -2336,7 +2336,7 @@ observeEvent(input$btn_descargar_js, {
     # Añadir Curva solo si existe
   if(!is.null(curva_img)) {
     contenido <- c(contenido, list(
-      h2("6. Curva Epidémica"),
+      h2("Curva Epidémica"),
       img(src = curva_img, style="width:100%; border:1px solid #eee;")
     ))
   }

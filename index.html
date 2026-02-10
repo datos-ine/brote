@@ -2,7 +2,7 @@
 <html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
 
 <meta charset="utf-8">
-<meta name="generator" content="quarto-1.8.21">
+<meta name="generator" content="quarto-1.8.25">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
@@ -31,7 +31,7 @@ ul.task-list li input[type="checkbox"] {
 <script src="index_files/libs/quarto-html/tippy.umd.min.js"></script>
 <script src="index_files/libs/quarto-html/anchor.min.js"></script>
 <link href="index_files/libs/quarto-html/tippy.css" rel="stylesheet">
-<link href="index_files/libs/quarto-html/quarto-syntax-highlighting-ea1d7ac60288e0f1efdbc993fd8432ae.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<link href="index_files/libs/quarto-html/quarto-syntax-highlighting-7b89279ff1a6dce999919e0e67d4d9ec.css" rel="stylesheet" id="quarto-text-highlighting-styles">
 <script src="index_files/libs/bootstrap/bootstrap.min.js"></script>
 <link href="index_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
 <link href="index_files/libs/bootstrap/bootstrap-bf71b591a9d31b6585383f83b4bcc134.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
@@ -84,20 +84,20 @@ ul.task-list li input[type="checkbox"] {
 #| warning: false
 #| message: false
 
-if (!requireNamespace("munsell", quietly = TRUE)) {
-  install.packages("munsell", repos = "https://webr.r-wasm.org")
-}
+# if (!requireNamespace("munsell", quietly = TRUE)) {
+#   install.packages("munsell", repos = "https://webr.r-wasm.org")
+# }
 library(munsell)
 
 library(shiny)
 library(bslib)
 library(htmltools)
+library(dplyr)
 library(yaml)
 library(readr)
-library(dplyr)
 library(shinyjs)
-library(knitr)
 
+debug = FALSE
 
 # =========================================================
 # JAVASCRIPT PERSONALIZADO PARA DESCARGAS LOCALES
@@ -999,9 +999,9 @@ calcular_tasas_ataque &lt;- function(datos, variable_evento, variables_exposicio
   }
   
   if (!is.null(variable_participo) &amp;&amp; variable_participo %in% names(datos)) {
-    datos &lt;- datos %&gt;% 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %&gt;%
-      filter(participa == TRUE) %&gt;%
+    datos &lt;- datos |&gt; 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |&gt;
+      filter(participa == TRUE) |&gt;
       select(-participa)
     
     if (debug) {
@@ -1023,11 +1023,11 @@ calcular_tasas_ataque &lt;- function(datos, variable_evento, variables_exposicio
       analizar_valores_logicos(datos[[exposicion]], exposicion)
     }
     
-    datos_exp &lt;- datos %&gt;%
+    datos_exp &lt;- datos |&gt;
       mutate(
         evento = convertir_a_logico(.data[[variable_evento]]),
         expos = convertir_a_logico(.data[[exposicion]])
-      ) %&gt;%
+      ) |&gt;
       filter(!is.na(evento) &amp; !is.na(expos))
     
     if (debug) {
@@ -1108,9 +1108,9 @@ calcular_odds_ratio &lt;- function(datos, variable_evento, variables_exposicion,
   }
   
   if (!is.null(variable_participo) &amp;&amp; variable_participo %in% names(datos)) {
-    datos &lt;- datos %&gt;% 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) %&gt;%
-      filter(participa == TRUE) %&gt;%
+    datos &lt;- datos |&gt; 
+      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |&gt;
+      filter(participa == TRUE) |&gt;
       select(-participa)
     
     if (debug) {
@@ -1132,11 +1132,11 @@ calcular_odds_ratio &lt;- function(datos, variable_evento, variables_exposicion,
       analizar_valores_logicos(datos[[exposicion]], exposicion)
     }
     
-    datos_exp &lt;- datos %&gt;%
+    datos_exp &lt;- datos |&gt;
       mutate(
         evento = convertir_a_logico(.data[[variable_evento]]),
         expos = convertir_a_logico(.data[[exposicion]])
-      ) %&gt;%
+      ) |&gt;
       filter(!is.na(evento) &amp; !is.na(expos))
     
     if (debug) {
@@ -1413,7 +1413,7 @@ plot_to_b64 &lt;- function(p) {
   library(base64enc)
   tmp &lt;- tempfile(fileext = ".png")
   # Ajustamos dimensiones para el informe
-  ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+  ggsave(tmp, plot = p, width = 6, height = 4, dpi = 200)
   encoded &lt;- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
   unlink(tmp)
   return(paste0("data:image/png;base64,", encoded))
@@ -1434,7 +1434,8 @@ ui &lt;- fluidPage(
       width = 3,
       fileInput("datos", "1. Seleccionar Datos (csv o txt)", accept = c(".csv", ".txt")),
       fileInput("yaml", "2. Seleccionar Configuración (yaml)", accept = c(".yaml", ".yml")),
-      checkboxInput("debug", "Modo debug", value = FALSE),
+      #checkboxInput("debug", "Modo debug", value = FALSE),
+      hr(),
       actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
       actionButton("limpiar", "Limpiar todo", class = "btn-warning w-100 mt-2"),
       hr(),
@@ -1475,7 +1476,7 @@ server &lt;- function(input, output, session) {
   
   observeEvent(input$datos, {
     tryCatch({
-      estado$datos &lt;- read_delim(input$datos$datapath, delim = ";", 
+      estado$datos &lt;- readr::read_delim(input$datos$datapath, delim = ";", 
                                 locale = locale(decimal_mark = ","),
                                 show_col_types = FALSE)
       # RESET CLAVE: Si cargan datos nuevos, el informe anterior desaparece
@@ -1483,7 +1484,7 @@ server &lt;- function(input, output, session) {
       showNotification("✓ Datos CSV cargados", type = "message")
     }, error = function(e) {
       tryCatch({
-        estado$datos &lt;- read_csv(input$datos$datapath, show_col_types = FALSE)
+        estado$datos &lt;- readr::read_csv(input$datos$datapath, show_col_types = FALSE)
         showNotification("✓ Datos CSV cargados", type = "message")
       }, error = function(e2) {
         showNotification(paste("Error al leer CSV:", e2$message), type = "error")
@@ -1494,7 +1495,7 @@ server &lt;- function(input, output, session) {
   
   observeEvent(input$yaml, {
     tryCatch({
-      estado$solicitud &lt;- read_yaml(input$yaml$datapath)
+      estado$solicitud &lt;- yaml::read_yaml(input$yaml$datapath)
       estado$ejecutado &lt;- FALSE # RESET CLAVE
       showNotification("✓ YAML cargado", type = "message")
     }, error = function(e) {
@@ -1838,7 +1839,7 @@ server &lt;- function(input, output, session) {
       ))
     }
     
-    if (input$debug) {
+    if (debug) {
       cat("\n=== DEBUG TASAS DE ATAQUE ===\n")
       cat("Variable evento:", variable_evento, "\n")
       cat("Variable participo:", variable_participo, "\n")
@@ -1859,7 +1860,7 @@ server &lt;- function(input, output, session) {
       variable_evento = variable_evento,
       variables_exposicion = variables_exposicion,
       variable_participo = variable_participo,
-      debug = input$debug
+      debug = FALSE #input$debug
     )
     
     estado$resultados_tasas &lt;- resultados_tasas
@@ -1894,7 +1895,7 @@ server &lt;- function(input, output, session) {
       ))
     }
     
-    if (input$debug) {
+    if (debug) {
       cat("\n=== DEBUG ODDS RATIO ===\n")
       cat("Variable evento:", variable_evento, "\n")
       cat("Variable participo:", variable_participo, "\n")
@@ -1928,13 +1929,13 @@ server &lt;- function(input, output, session) {
       variable_evento = variable_evento,
       variables_exposicion = variables_exposicion,
       variable_participo = variable_participo,
-      debug = input$debug
+      debug = FALSE #input$debug
     )
     
     # Almacenar resultados para el forest plot
     estado$resultados_or &lt;- resultados_or
     
-    if (input$debug &amp;&amp; length(resultados_or) &gt; 0) {
+    if (debug &amp;&amp; length(resultados_or) &gt; 0) {
       cat("\n=== RESULTADOS ODDS RATIO ===\n")
       for (exp in names(resultados_or)) {
         cat("\nExposición:", exp, "\n")
@@ -2104,8 +2105,8 @@ server &lt;- function(input, output, session) {
     # Preparar datos según el tipo
     if (es_fecha) {
       # Manejo de fechas
-      datos_plot &lt;- datos %&gt;%
-        mutate(tiempo = as.Date(.data[[var_inicio]])) %&gt;%
+      datos_plot &lt;- datos |&gt;
+        mutate(tiempo = as.Date(.data[[var_inicio]])) |&gt;
         filter(!is.na(tiempo))
       
       if (nrow(datos_plot) == 0) {
@@ -2117,18 +2118,18 @@ server &lt;- function(input, output, session) {
       }
       
       # Contar casos por fecha
-      datos_count &lt;- datos_plot %&gt;%
-        group_by(tiempo) %&gt;%
+      datos_count &lt;- datos_plot |&gt;
+        group_by(tiempo) |&gt;
         summarise(n_casos = n(), .groups = "drop")
       
       # Completar todas las fechas del rango (incluir fechas sin casos)
       rango_fechas &lt;- seq(min(datos_count$tiempo), max(datos_count$tiempo), by = "1 day")
-      datos_count_completo &lt;- data.frame(tiempo = rango_fechas) %&gt;%
-        left_join(datos_count, by = "tiempo") %&gt;%
+      datos_count_completo &lt;- data.frame(tiempo = rango_fechas) |&gt;
+        left_join(datos_count, by = "tiempo") |&gt;
         mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
       
       # Crear datos para líneas horizontales (sin usar crossing de tidyr)
-      datos_lineas &lt;- datos_count_completo %&gt;%
+      datos_lineas &lt;- datos_count_completo |&gt;
         filter(n_casos &gt; 1)
       
       if (nrow(datos_lineas) &gt; 0) {
@@ -2186,8 +2187,8 @@ server &lt;- function(input, output, session) {
       
     } else if (es_hora) {
       # Manejo de horas (numérico)
-      datos_plot &lt;- datos %&gt;%
-        mutate(tiempo = as.numeric(.data[[var_inicio]])) %&gt;%
+      datos_plot &lt;- datos |&gt;
+        mutate(tiempo = as.numeric(.data[[var_inicio]])) |&gt;
         filter(!is.na(tiempo))
       
       if (nrow(datos_plot) == 0) {
@@ -2199,18 +2200,18 @@ server &lt;- function(input, output, session) {
       }
       
       # Contar casos por hora
-      datos_count &lt;- datos_plot %&gt;%
-        group_by(tiempo) %&gt;%
+      datos_count &lt;- datos_plot |&gt;
+        group_by(tiempo) |&gt;
         summarise(n_casos = n(), .groups = "drop")
       
       # Completar todas las horas del rango (incluir horas sin casos)
       rango_horas &lt;- seq(floor(min(datos_count$tiempo)), ceiling(max(datos_count$tiempo)), by = 1)
-      datos_count_completo &lt;- data.frame(tiempo = rango_horas) %&gt;%
-        left_join(datos_count, by = "tiempo") %&gt;%
+      datos_count_completo &lt;- data.frame(tiempo = rango_horas) |&gt;
+        left_join(datos_count, by = "tiempo") |&gt;
         mutate(n_casos = ifelse(is.na(n_casos), 0, n_casos))
       
       # Crear datos para líneas horizontales (sin usar crossing de tidyr)
-      datos_lineas &lt;- datos_count_completo %&gt;%
+      datos_lineas &lt;- datos_count_completo |&gt;
         filter(n_casos &gt; 1)
       
       if (nrow(datos_lineas) &gt; 0) {
@@ -2300,7 +2301,7 @@ observeEvent(input$btn_descargar_js, {
     if (is.null(p)) return(NULL)
     tryCatch({
       tmp &lt;- tempfile(fileext = ".png")
-      ggsave(tmp, plot = p, width = 8, height = 5, dpi = 150)
+      ggsave(tmp, plot = p, width = 6, height = 3, dpi = 150)
       res &lt;- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
       unlink(tmp)
       paste0("data:image/png;base64,", res)
@@ -2341,31 +2342,31 @@ observeEvent(input$btn_descargar_js, {
     h1("Informe de Investigación de Brote", style="text-align:center; color:#2c3e50;"),
     p(tags$b("Fecha: "), format(Sys.time(), "%d/%m/%Y %H:%M")),
     hr(),
-    h2("1. Descripción univariada"),
+    h2("Descripción univariada"),
     HTML(tabla_desc_html),
     br()
   )
   
   # Añadir tasas
   contenido &lt;- c(contenido, list(
-    h2("2. Tasas de ataque por exposición"),
+    h2("Tasas de ataque por exposición"),
     HTML(tabla_tasas_html)
   ))
   
   contenido &lt;- c(contenido, list(
-    h2("3. Tabla de Odds Ratio"),
+    h2("Tabla de Odds Ratio"),
     HTML(tabla_or_html)
   ))
   
   contenido &lt;- c(contenido, list(
-    h2("4. Frecuencia combinada de síntomas"),
+    h2("Frecuencia combinada de síntomas"),
     HTML(tabla_freq_comb_html)
   ))
   
     # Añadir Forest Plot solo si existe
   if(!is.null(forest_img)) {
     contenido &lt;- c(contenido, list(
-      h2("5. Forest Plot"),
+      h2("Forest Plot"),
       img(src = forest_img, style="width:100%; border:1px solid #eee;")
     ))
   }
@@ -2373,7 +2374,7 @@ observeEvent(input$btn_descargar_js, {
     # Añadir Curva solo si existe
   if(!is.null(curva_img)) {
     contenido &lt;- c(contenido, list(
-      h2("6. Curva Epidémica"),
+      h2("Curva Epidémica"),
       img(src = curva_img, style="width:100%; border:1px solid #eee;")
     ))
   }
@@ -2453,13 +2454,14 @@ shinyApp(ui, server)
       e.clearSelection();
     }
     const getTextToCopy = function(trigger) {
-        const codeEl = trigger.previousElementSibling.cloneNode(true);
-        for (const childEl of codeEl.children) {
-          if (isCodeAnnotation(childEl)) {
-            childEl.remove();
-          }
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
         }
-        return codeEl.innerText;
+      }
+      return codeEl.innerText;
     }
     const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
       text: getTextToCopy
