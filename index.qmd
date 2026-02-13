@@ -798,6 +798,115 @@ calcular_frecuencia_combinada_sintomas <- function(datos, vars_sintomas) {
   return(tabla_freq)
 }
 
+calcular_frecuencia_simple_sintomas <- function(datos, vars_sintomas) {
+  
+  if (is.null(vars_sintomas) || length(vars_sintomas) == 0) {
+    return(list(error = "No hay variables de síntomas definidas"))
+  }
+  
+  # ==============================
+  # Extraer nombres de variables
+  # ==============================
+  
+  nombres_sintomas <- sapply(vars_sintomas, function(s) {
+    if (is.list(s) && !is.null(s$nombre)) {
+      return(s$nombre)
+    } else if (is.character(s)) {
+      return(s)
+    }
+    return(NA)
+  })
+  
+  nombres_sintomas <- nombres_sintomas[!is.na(nombres_sintomas)]
+  
+  # ==============================
+  # Verificar existencia en datos
+  # ==============================
+  
+  sintomas_validos <- nombres_sintomas[nombres_sintomas %in% names(datos)]
+  
+  if (length(sintomas_validos) == 0) {
+    return(list(error = "Ninguna variable de síntomas encontrada en los datos"))
+  }
+  
+  # ==============================
+  # Convertir a lógico
+  # ==============================
+  
+  datos_sintomas <- datos[, sintomas_validos, drop = FALSE]
+  datos_sintomas <- as.data.frame(lapply(datos_sintomas, convertir_a_logico))
+  
+  # ==============================
+  # Calcular frecuencia por síntoma
+  # ==============================
+  
+  frecuencia <- sapply(datos_sintomas, function(col) {
+    sum(col == TRUE, na.rm = TRUE)
+  })
+  
+  total_obs <- nrow(datos_sintomas)
+  
+  porcentaje <- round(100 * frecuencia / total_obs, 2)
+  
+  tabla_freq <- data.frame(
+    Sintoma = names(frecuencia),
+    Frecuencia = as.numeric(frecuencia),
+    Porcentaje = porcentaje,
+    stringsAsFactors = FALSE
+  )
+  
+  # ==============================
+  # Ordenar de mayor a menor
+  # ==============================
+  
+  tabla_freq <- tabla_freq[order(-tabla_freq$Frecuencia), ]
+  rownames(tabla_freq) <- NULL
+  
+  return(tabla_freq)
+}
+
+convertir_frec_simple_sintomas_a_html <- function(tabla_freq) {
+  
+  if (is.null(tabla_freq)) {
+    return("<p class='alert alert-warning'>No se pudo calcular la frecuencia de síntomas</p>")
+  }
+  
+  if (!is.null(tabla_freq$error)) {
+    return(sprintf("<p class='alert alert-warning'>%s</p>", tabla_freq$error))
+  }
+  
+  filas_html <- apply(tabla_freq, 1, function(row) {
+    sprintf("<tr><td>%s</td><td>%s</td><td>%.2f%%</td></tr>",
+            row["Sintoma"],
+            row["Frecuencia"],
+            as.numeric(row["Porcentaje"]))
+  })
+  
+  html_tabla <- sprintf("
+    <table class='table table-sm table-bordered table-striped'>
+      <thead>
+        <tr>
+          <th>Síntoma</th>
+          <th>Frecuencia</th>
+          <th>Porcentaje</th>
+        </tr>
+      </thead>
+      <tbody>
+        %s
+      </tbody>
+    </table>
+    <div class='alert alert-info' style='margin-top: 15px;'>
+      <small>
+        <strong>Nota:</strong> Esta tabla muestra la frecuencia individual de cada síntoma entre los casos,
+        ordenados de mayor a menor. Puede utilizarse como apoyo para la construcción de una definición de caso epidemiológica.
+      </small>
+    </div>
+  ", paste(filas_html, collapse = "\n"))
+  
+  return(html_tabla)
+}
+
+
 # Función para convertir frecuencia combinada a HTML
 convertir_frec_combinada_a_html <- function(tabla_freq) {
   if (is.null(tabla_freq)) {
@@ -1543,6 +1652,7 @@ server <- function(input, output, session) {
     grafico_rr = NULL,  # NUEVO
     grafico_curva = NULL,
     freq_combinada = NULL,
+    freq_simple = NULL,
     listo = FALSE
   )
   
@@ -1589,6 +1699,7 @@ server <- function(input, output, session) {
     estado$grafico_rr <- NULL
     estado$grafico_curva <- NULL
     estado$freq_combinada <- NULL
+    estado$freq_simple <- NULL
     reset("datos")
     reset("yaml")
     showNotification("Vista limpiada", type = "warning")
@@ -1860,6 +1971,16 @@ output$resultado <- renderUI({
       )
     }
 
+    if (length(productos) > 0 && "frecuencia_simple_sintomas" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Frecuencia simple de síntomas", style = "color: #34495e;"),
+        p("Síntomas presentes en los casos:"),
+        uiOutput("tabla_freq_simple"),
+        hr()
+      )
+    }
+    
     if (length(productos) > 0 && "frecuencia_combinada_sintomas" %in% productos) {
       elementos <- tagList(
         elementos,
@@ -2230,6 +2351,77 @@ output$resultado <- renderUI({
     )
   })
     
+  output$tabla_freq_simple <- renderUI({
+  
+  req(input$ejecutar > 0)
+  
+  info <- informe()
+  
+  if (!is.null(info$error)) return(NULL)
+  
+  vars <- info$vars
+  
+  if (is.null(vars$sintomas)) {
+    return(div(
+      class = "alert alert-warning",
+      "No hay variables de síntomas definidas en el YAML"
+    ))
+  }
+  
+  # Calcular frecuencia simple de síntomas
+  tabla_freq <- calcular_frecuencia_simple_sintomas(
+    datos = info$datos,
+    vars_sintomas = vars$sintomas
+  )
+  
+  # Guardar para descarga / uso posterior
+  estado$freq_simple <- tabla_freq
+  
+  # Manejo de error de la función
+  if (!is.null(tabla_freq$error)) {
+    return(div(
+      class = "alert alert-warning",
+      tabla_freq$error
+    ))
+  }
+  
+  # Crear filas HTML
+  filas <- apply(tabla_freq, 1, function(row) {
+    tags$tr(
+      tags$td(row["Sintoma"]),
+      tags$td(row["Frecuencia"], style = "text-align: center;"),
+      tags$td(paste0(row["Porcentaje"], "%"), style = "text-align: center;")
+    )
+  })
+  
+  # Render tabla
+  tags$div(
+    class = "table-responsive",
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Síntoma"),
+          tags$th("Frecuencia", style = "text-align: center;"),
+          tags$th("Porcentaje", style = "text-align: center;")
+        )
+      ),
+      tags$tbody(filas)
+    ),
+    
+    tags$div(
+      class = "alert alert-info",
+      style = "margin-top: 15px;",
+      tags$small(
+        tags$strong("Nota:"), 
+        " Esta tabla muestra la frecuencia individual de cada síntoma, ordenada de mayor a menor. ",
+        "El síntoma predominante puede utilizarse como base para la definición de caso clínica del brote."
+      )
+    )
+  )
+})
+
+  
     # Verificar si hay configuración explícita de unidad de tiempo
     unidad_tiempo_config <- NULL
     if (!is.null(info$vars$unidad_tiempo)) {
@@ -2497,6 +2689,12 @@ observeEvent(input$btn_descargar_js, {
     "<p>No hay datos de Riesgos Relativos disponibles.</p>"
   }
   
+  tabla_freq_simple_html <- if(!is.null(estado$freq_simple)) {
+    convertir_frec_simple_sintomas_a_html(estado$freq_simple)
+  } else { 
+    "<p>No hay datos de frecuencia de síntomas disponibles.</p>"
+  }
+  
   tabla_freq_comb_html <- if(!is.null(estado$freq_combinada)) {
     convertir_frec_combinada_a_html(estado$freq_combinada)
   } else { 
@@ -2549,6 +2747,13 @@ observeEvent(input$btn_descargar_js, {
     contenido <- c(contenido, list(
       h2("Forest Plot"),
       img(src = forest_or_img, style="width:60%; border:1px solid #eee;")
+    ))
+  }
+  
+    if(!is.null(tabla_freq_simple_html)) {  
+    contenido <- c(contenido, list(
+      h2("Frecuencia simple de síntomas"),
+      HTML(tabla_freq_simple_html)
     ))
   }
   
