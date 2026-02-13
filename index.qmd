@@ -543,7 +543,7 @@ convertir_univariada_a_html <- function(resultados) {
               <tr><td>N faltantes</td><td>%d</td></tr>
               <tr><td>Media</td><td>%.2f</td></tr>
               <tr><td>Mediana</td><td>%.2f</td></tr>
-              <tr><td>Desv. Est.</td><td>%.2f</td></tr>
+              <tr><td>Desvío Estándar</td><td>%.2f</td></tr>
               <tr><td>Mínimo</td><td>%.2f</td></tr>
               <tr><td>Máximo</td><td>%.2f</td></tr>
               <tr><td>Q1</td><td>%.2f</td></tr>
@@ -974,7 +974,7 @@ render_univariada <- function(resultados) {
             tags$tr(tags$td("N faltantes"), tags$td(res$n_faltantes)),
             tags$tr(tags$td("Media"), tags$td(round(res$media, 2))),
             tags$tr(tags$td("Mediana"), tags$td(round(res$mediana, 2))),
-            tags$tr(tags$td("Desv. Est."), tags$td(round(res$desv_std, 2))),
+            tags$tr(tags$td("Desvío Estándar"), tags$td(round(res$desv_std, 2))),
             tags$tr(tags$td("Mínimo"), tags$td(round(res$min, 2))),
             tags$tr(tags$td("Máximo"), tags$td(round(res$max, 2))),
             tags$tr(tags$td("Q1"), tags$td(round(res$q1, 2))),
@@ -1545,6 +1545,149 @@ render_tabla_or <- function(resultados_or) {
   )
 }
 
+calcular_incubacion <- function(datos, vars) {
+  
+  if (is.null(vars$variable_tiempo_inicio) || is.null(vars$unidad_tiempo)) {
+    return(list(error = "No se definió variable_tiempo_inicio o unidad_tiempo en YAML"))
+  }
+  
+  var_inicio <- vars$variable_tiempo_inicio
+  unidad <- tolower(vars$unidad_tiempo)
+  
+  if (!var_inicio %in% names(datos)) {
+    return(list(error = "La variable de inicio de síntomas no existe en los datos"))
+  }
+  
+  # ---- Obtener tiempo de inicio ----
+  inicio <- datos[[var_inicio]]
+  
+  # ---- Obtener tiempo de ingesta ----
+  if (!is.null(vars$fecha_ingesta)) {
+    
+    # Si es nombre de variable
+    if (vars$fecha_ingesta %in% names(datos)) {
+      ingesta <- datos[[vars$fecha_ingesta]]
+    } else {
+      # Si es valor fijo
+      ingesta <- rep(vars$fecha_ingesta, length(inicio))
+    }
+    
+  } else {
+    return(list(error = "No se definió fecha_ingesta en YAML"))
+  }
+  
+  # ---- Conversión según unidad ----
+  if (unidad == "hora") {
+    
+    # Caso POSIX
+    if (inherits(inicio, "POSIXct") || inherits(ingesta, "POSIXct")) {
+      incubacion <- as.numeric(difftime(inicio, ingesta, units = "hours"))
+    } else {
+      # Numérico (horas)
+      incubacion <- as.numeric(inicio) - as.numeric(ingesta)
+    }
+    
+    unidad_salida <- "horas"
+    
+  } else if (unidad == "fecha") {
+    
+    inicio <- as.Date(inicio)
+    ingesta <- as.Date(ingesta)
+    incubacion <- as.numeric(inicio - ingesta)
+    
+    unidad_salida <- "días"
+    
+  } else {
+    return(list(error = "unidad_tiempo debe ser 'hora' o 'fecha'"))
+  }
+  
+  # ---- Limpiar datos ----
+  incubacion <- incubacion[!is.na(incubacion)]
+  incubacion <- incubacion[incubacion >= 0]
+  
+  if (length(incubacion) < 3) {
+    return(list(error = "No hay suficientes datos válidos para calcular incubación"))
+  }
+  
+  # ---- Estadísticos ----
+  mediana <- median(incubacion)
+  q1 <- quantile(incubacion, 0.25)
+  q3 <- quantile(incubacion, 0.75)
+  minimo <- min(incubacion)
+  maximo <- max(incubacion)
+  n <- length(incubacion)
+  
+  # ---- Clasificación orientativa ----
+  clasificacion <- clasificar_incubacion(mediana, unidad_salida)
+  
+  return(list(
+    mediana = round(mediana, 2),
+    q1 = round(q1, 2),
+    q3 = round(q3, 2),
+    minimo = round(minimo, 2),
+    maximo = round(maximo, 2),
+    n = n,
+    unidad = unidad_salida,
+    clasificacion = clasificacion
+  ))
+}
+
+clasificar_incubacion <- function(mediana, unidad) {
+  
+  if (unidad == "días") {
+    mediana <- mediana * 24
+  }
+  
+  if (mediana <= 6) {
+    return("Compatible con toxinas preformadas")
+  } else if (mediana <= 16) {
+    return("Compatible con Clostridium perfringens / Bacillus cereus diarreico")
+  } else if (mediana <= 48) {
+    return("Compatible con Salmonella / Norovirus")
+  } else {
+    return("Compatible con agentes de incubación prolongada")
+  }
+}
+
+convertir_incubacion_a_html <- function(res) {
+  
+  if (is.null(res)) {
+    return("<p class='alert alert-warning'>No se pudo calcular el tiempo de incubación</p>")
+  }
+  
+  if (!is.null(res$error)) {
+    return(sprintf("<p class='alert alert-warning'>%s</p>", res$error))
+  }
+  
+  html <- sprintf("
+    <table class='table table-sm table-bordered table-striped'>
+      <thead>
+        <tr>
+          <th>Indicador</th>
+          <th>Valor</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Mediana</td><td>%s %s</td></tr>
+        <tr><td>Q1–Q3</td><td>%s - %s %s</td></tr>
+        <tr><td>Mín–Máx</td><td>%s - %s %s</td></tr>
+        <tr><td>Casos válidos</td><td>%s</td></tr>
+      </tbody>
+    </table>
+    <div class='alert alert-info' style='margin-top: 15px;'>
+      <small><strong>Interpretación:</strong> %s</small>
+    </div>
+  ",
+    res$mediana, res$unidad,
+    res$q1, res$q3, res$unidad,
+    res$minimo, res$maximo, res$unidad,
+    res$n,
+    res$clasificacion
+  )
+  
+  return(html)
+}
+
 
 # OPTIMIZACIÓN: Función más eficiente para convertir gráficos a Base64
 plot_to_b64 <- function(p) {
@@ -1608,8 +1751,8 @@ ui <- fluidPage(
   sidebarLayout(
     sidebarPanel(
       width = 3,
-      fileInput("datos", "1. Seleccionar Datos (csv o txt)", accept = c(".csv", ".txt")),
-      fileInput("yaml", "2. Seleccionar Configuración (yaml)", accept = c(".yaml", ".yml")),
+      fileInput("datos", "1. Seleccionar datos (csv o txt)", accept = c(".csv", ".txt")),
+      fileInput("yaml", "2. Seleccionar configuración (yaml)", accept = c(".yaml", ".yml")),
       #checkboxInput("debug", "Modo debug", value = FALSE),
       hr(),
       actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
@@ -1653,6 +1796,7 @@ server <- function(input, output, session) {
     grafico_curva = NULL,
     freq_combinada = NULL,
     freq_simple = NULL,
+    incubacion = NULL,
     listo = FALSE
   )
   
@@ -1700,6 +1844,7 @@ server <- function(input, output, session) {
     estado$grafico_curva <- NULL
     estado$freq_combinada <- NULL
     estado$freq_simple <- NULL
+    estado$incubacion <- NULL
     reset("datos")
     reset("yaml")
     showNotification("Vista limpiada", type = "warning")
@@ -1987,6 +2132,16 @@ output$resultado <- renderUI({
         h3("Frecuencia combinada de síntomas", style = "color: #34495e;"),
         p("Combinaciones de síntomas presentes en los casos:"),
         uiOutput("tabla_freq_combinada"),
+        hr()
+      )
+    }
+    
+    if (length(productos) > 0 && "incubacion" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Incubación", style = "color: #34495e;"),
+        p("Resumen tiempo de incubación:"),
+        uiOutput("tabla_incubacion"),
         hr()
       )
     }
@@ -2633,6 +2788,49 @@ output$resultado <- renderUI({
     print(p)
   })
   
+  output$tabla_incubacion <- renderUI({
+  req(input$ejecutar > 0)
+  
+  info <- informe()
+  if (!is.null(info$error)) return(NULL)
+  
+  resultado <- calcular_incubacion(info$datos, info$vars)
+  
+  estado$incubacion <- resultado
+  
+  if (!is.null(resultado$error)) {
+    return(div(class = "alert alert-warning", resultado$error))
+  }
+  
+  tags$div(
+    class = "table-responsive",
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Indicador"),
+          tags$th("Valor", style = "text-align: center;")
+        )
+      ),
+      tags$tbody(
+        tags$tr(tags$td("Mediana"), tags$td(paste(resultado$mediana, resultado$unidad))),
+        tags$tr(tags$td("Q1–Q3"), tags$td(paste(resultado$q1, "-", resultado$q3, resultado$unidad))),
+        tags$tr(tags$td("Mín–Máx"), tags$td(paste(resultado$minimo, "-", resultado$maximo, resultado$unidad))),
+        tags$tr(tags$td("Casos válidos"), tags$td(resultado$n))
+      )
+    ),
+    tags$div(
+      class = "alert alert-info",
+      style = "margin-top: 15px;",
+      tags$small(
+        tags$strong("Interpretación:"), " ",
+        resultado$clasificacion
+      )
+    )
+  )
+})
+
+  
   output$debug_info <- renderText({
     paste0(
       "CSV: ", if(is.null(estado$datos)) "❌" else "✓",
@@ -2700,6 +2898,13 @@ observeEvent(input$btn_descargar_js, {
   } else { 
     "<p>No hay datos de frecuencia combinada de síntomas disponibles.</p>"
   }
+  
+    tabla_incubacion_html <- if(!is.null(estado$incubacion)) {
+    convertir_incubacion_a_html(estado$incubacion)
+  } else { 
+    "<p>No hay datos de incubación disponibles.</p>"
+  }
+ 
   
   # 3. Construir el cuerpo del informe dinámicamente
   contenido <- list(
@@ -2769,6 +2974,13 @@ observeEvent(input$btn_descargar_js, {
     contenido <- c(contenido, list(
       h2("Curva Epidémica"),
       img(src = curva_img, style="width:60%; border:1px solid #eee;")
+    ))
+  }
+  
+  if(!is.null(tabla_incubacion_html)) {
+    contenido <- c(contenido, list(
+      h2("Tiempo de incubación"),
+      HTML(tabla_incubacion_html)
     ))
   }
   

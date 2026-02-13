@@ -581,7 +581,7 @@ convertir_univariada_a_html &lt;- function(resultados) {
               &lt;tr&gt;&lt;td&gt;N faltantes&lt;/td&gt;&lt;td&gt;%d&lt;/td&gt;&lt;/tr&gt;
               &lt;tr&gt;&lt;td&gt;Media&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
               &lt;tr&gt;&lt;td&gt;Mediana&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
-              &lt;tr&gt;&lt;td&gt;Desv. Est.&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
+              &lt;tr&gt;&lt;td&gt;Desvío Estándar&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
               &lt;tr&gt;&lt;td&gt;Mínimo&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
               &lt;tr&gt;&lt;td&gt;Máximo&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
               &lt;tr&gt;&lt;td&gt;Q1&lt;/td&gt;&lt;td&gt;%.2f&lt;/td&gt;&lt;/tr&gt;
@@ -1012,7 +1012,7 @@ render_univariada &lt;- function(resultados) {
             tags$tr(tags$td("N faltantes"), tags$td(res$n_faltantes)),
             tags$tr(tags$td("Media"), tags$td(round(res$media, 2))),
             tags$tr(tags$td("Mediana"), tags$td(round(res$mediana, 2))),
-            tags$tr(tags$td("Desv. Est."), tags$td(round(res$desv_std, 2))),
+            tags$tr(tags$td("Desvío Estándar"), tags$td(round(res$desv_std, 2))),
             tags$tr(tags$td("Mínimo"), tags$td(round(res$min, 2))),
             tags$tr(tags$td("Máximo"), tags$td(round(res$max, 2))),
             tags$tr(tags$td("Q1"), tags$td(round(res$q1, 2))),
@@ -1583,6 +1583,149 @@ render_tabla_or &lt;- function(resultados_or) {
   )
 }
 
+calcular_incubacion &lt;- function(datos, vars) {
+  
+  if (is.null(vars$variable_tiempo_inicio) || is.null(vars$unidad_tiempo)) {
+    return(list(error = "No se definió variable_tiempo_inicio o unidad_tiempo en YAML"))
+  }
+  
+  var_inicio &lt;- vars$variable_tiempo_inicio
+  unidad &lt;- tolower(vars$unidad_tiempo)
+  
+  if (!var_inicio %in% names(datos)) {
+    return(list(error = "La variable de inicio de síntomas no existe en los datos"))
+  }
+  
+  # ---- Obtener tiempo de inicio ----
+  inicio &lt;- datos[[var_inicio]]
+  
+  # ---- Obtener tiempo de ingesta ----
+  if (!is.null(vars$fecha_ingesta)) {
+    
+    # Si es nombre de variable
+    if (vars$fecha_ingesta %in% names(datos)) {
+      ingesta &lt;- datos[[vars$fecha_ingesta]]
+    } else {
+      # Si es valor fijo
+      ingesta &lt;- rep(vars$fecha_ingesta, length(inicio))
+    }
+    
+  } else {
+    return(list(error = "No se definió fecha_ingesta en YAML"))
+  }
+  
+  # ---- Conversión según unidad ----
+  if (unidad == "hora") {
+    
+    # Caso POSIX
+    if (inherits(inicio, "POSIXct") || inherits(ingesta, "POSIXct")) {
+      incubacion &lt;- as.numeric(difftime(inicio, ingesta, units = "hours"))
+    } else {
+      # Numérico (horas)
+      incubacion &lt;- as.numeric(inicio) - as.numeric(ingesta)
+    }
+    
+    unidad_salida &lt;- "horas"
+    
+  } else if (unidad == "fecha") {
+    
+    inicio &lt;- as.Date(inicio)
+    ingesta &lt;- as.Date(ingesta)
+    incubacion &lt;- as.numeric(inicio - ingesta)
+    
+    unidad_salida &lt;- "días"
+    
+  } else {
+    return(list(error = "unidad_tiempo debe ser 'hora' o 'fecha'"))
+  }
+  
+  # ---- Limpiar datos ----
+  incubacion &lt;- incubacion[!is.na(incubacion)]
+  incubacion &lt;- incubacion[incubacion &gt;= 0]
+  
+  if (length(incubacion) &lt; 3) {
+    return(list(error = "No hay suficientes datos válidos para calcular incubación"))
+  }
+  
+  # ---- Estadísticos ----
+  mediana &lt;- median(incubacion)
+  q1 &lt;- quantile(incubacion, 0.25)
+  q3 &lt;- quantile(incubacion, 0.75)
+  minimo &lt;- min(incubacion)
+  maximo &lt;- max(incubacion)
+  n &lt;- length(incubacion)
+  
+  # ---- Clasificación orientativa ----
+  clasificacion &lt;- clasificar_incubacion(mediana, unidad_salida)
+  
+  return(list(
+    mediana = round(mediana, 2),
+    q1 = round(q1, 2),
+    q3 = round(q3, 2),
+    minimo = round(minimo, 2),
+    maximo = round(maximo, 2),
+    n = n,
+    unidad = unidad_salida,
+    clasificacion = clasificacion
+  ))
+}
+
+clasificar_incubacion &lt;- function(mediana, unidad) {
+  
+  if (unidad == "días") {
+    mediana &lt;- mediana * 24
+  }
+  
+  if (mediana &lt;= 6) {
+    return("Compatible con toxinas preformadas")
+  } else if (mediana &lt;= 16) {
+    return("Compatible con Clostridium perfringens / Bacillus cereus diarreico")
+  } else if (mediana &lt;= 48) {
+    return("Compatible con Salmonella / Norovirus")
+  } else {
+    return("Compatible con agentes de incubación prolongada")
+  }
+}
+
+convertir_incubacion_a_html &lt;- function(res) {
+  
+  if (is.null(res)) {
+    return("&lt;p class='alert alert-warning'&gt;No se pudo calcular el tiempo de incubación&lt;/p&gt;")
+  }
+  
+  if (!is.null(res$error)) {
+    return(sprintf("&lt;p class='alert alert-warning'&gt;%s&lt;/p&gt;", res$error))
+  }
+  
+  html &lt;- sprintf("
+    &lt;table class='table table-sm table-bordered table-striped'&gt;
+      &lt;thead&gt;
+        &lt;tr&gt;
+          &lt;th&gt;Indicador&lt;/th&gt;
+          &lt;th&gt;Valor&lt;/th&gt;
+        &lt;/tr&gt;
+      &lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td&gt;Mediana&lt;/td&gt;&lt;td&gt;%s %s&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Q1–Q3&lt;/td&gt;&lt;td&gt;%s - %s %s&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Mín–Máx&lt;/td&gt;&lt;td&gt;%s - %s %s&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td&gt;Casos válidos&lt;/td&gt;&lt;td&gt;%s&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;div class='alert alert-info' style='margin-top: 15px;'&gt;
+      &lt;small&gt;&lt;strong&gt;Interpretación:&lt;/strong&gt; %s&lt;/small&gt;
+    &lt;/div&gt;
+  ",
+    res$mediana, res$unidad,
+    res$q1, res$q3, res$unidad,
+    res$minimo, res$maximo, res$unidad,
+    res$n,
+    res$clasificacion
+  )
+  
+  return(html)
+}
+
 
 # OPTIMIZACIÓN: Función más eficiente para convertir gráficos a Base64
 plot_to_b64 &lt;- function(p) {
@@ -1646,8 +1789,8 @@ ui &lt;- fluidPage(
   sidebarLayout(
     sidebarPanel(
       width = 3,
-      fileInput("datos", "1. Seleccionar Datos (csv o txt)", accept = c(".csv", ".txt")),
-      fileInput("yaml", "2. Seleccionar Configuración (yaml)", accept = c(".yaml", ".yml")),
+      fileInput("datos", "1. Seleccionar datos (csv o txt)", accept = c(".csv", ".txt")),
+      fileInput("yaml", "2. Seleccionar configuración (yaml)", accept = c(".yaml", ".yml")),
       #checkboxInput("debug", "Modo debug", value = FALSE),
       hr(),
       actionButton("ejecutar", "Generar informe", class = "btn-primary w-100"),
@@ -1691,6 +1834,7 @@ server &lt;- function(input, output, session) {
     grafico_curva = NULL,
     freq_combinada = NULL,
     freq_simple = NULL,
+    incubacion = NULL,
     listo = FALSE
   )
   
@@ -1738,6 +1882,7 @@ server &lt;- function(input, output, session) {
     estado$grafico_curva &lt;- NULL
     estado$freq_combinada &lt;- NULL
     estado$freq_simple &lt;- NULL
+    estado$incubacion &lt;- NULL
     reset("datos")
     reset("yaml")
     showNotification("Vista limpiada", type = "warning")
@@ -2025,6 +2170,16 @@ output$resultado &lt;- renderUI({
         h3("Frecuencia combinada de síntomas", style = "color: #34495e;"),
         p("Combinaciones de síntomas presentes en los casos:"),
         uiOutput("tabla_freq_combinada"),
+        hr()
+      )
+    }
+    
+    if (length(productos) &gt; 0 &amp;&amp; "incubacion" %in% productos) {
+      elementos &lt;- tagList(
+        elementos,
+        h3("Incubación", style = "color: #34495e;"),
+        p("Resumen tiempo de incubación:"),
+        uiOutput("tabla_incubacion"),
         hr()
       )
     }
@@ -2671,6 +2826,49 @@ output$resultado &lt;- renderUI({
     print(p)
   })
   
+  output$tabla_incubacion &lt;- renderUI({
+  req(input$ejecutar &gt; 0)
+  
+  info &lt;- informe()
+  if (!is.null(info$error)) return(NULL)
+  
+  resultado &lt;- calcular_incubacion(info$datos, info$vars)
+  
+  estado$incubacion &lt;- resultado
+  
+  if (!is.null(resultado$error)) {
+    return(div(class = "alert alert-warning", resultado$error))
+  }
+  
+  tags$div(
+    class = "table-responsive",
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Indicador"),
+          tags$th("Valor", style = "text-align: center;")
+        )
+      ),
+      tags$tbody(
+        tags$tr(tags$td("Mediana"), tags$td(paste(resultado$mediana, resultado$unidad))),
+        tags$tr(tags$td("Q1–Q3"), tags$td(paste(resultado$q1, "-", resultado$q3, resultado$unidad))),
+        tags$tr(tags$td("Mín–Máx"), tags$td(paste(resultado$minimo, "-", resultado$maximo, resultado$unidad))),
+        tags$tr(tags$td("Casos válidos"), tags$td(resultado$n))
+      )
+    ),
+    tags$div(
+      class = "alert alert-info",
+      style = "margin-top: 15px;",
+      tags$small(
+        tags$strong("Interpretación:"), " ",
+        resultado$clasificacion
+      )
+    )
+  )
+})
+
+  
   output$debug_info &lt;- renderText({
     paste0(
       "CSV: ", if(is.null(estado$datos)) "❌" else "✓",
@@ -2738,6 +2936,13 @@ observeEvent(input$btn_descargar_js, {
   } else { 
     "&lt;p&gt;No hay datos de frecuencia combinada de síntomas disponibles.&lt;/p&gt;"
   }
+  
+    tabla_incubacion_html &lt;- if(!is.null(estado$incubacion)) {
+    convertir_incubacion_a_html(estado$incubacion)
+  } else { 
+    "&lt;p&gt;No hay datos de incubación disponibles.&lt;/p&gt;"
+  }
+ 
   
   # 3. Construir el cuerpo del informe dinámicamente
   contenido &lt;- list(
@@ -2807,6 +3012,13 @@ observeEvent(input$btn_descargar_js, {
     contenido &lt;- c(contenido, list(
       h2("Curva Epidémica"),
       img(src = curva_img, style="width:60%; border:1px solid #eee;")
+    ))
+  }
+  
+  if(!is.null(tabla_incubacion_html)) {
+    contenido &lt;- c(contenido, list(
+      h2("Tiempo de incubación"),
+      HTML(tabla_incubacion_html)
     ))
   }
   
