@@ -367,31 +367,29 @@ generar_descripcion_univariada <- function(datos, variables_sociodem, config_var
     tipos_vars <- rep(NA, length(nombres_vars))
   }
   
-  # Añadir variables creadas automáticamente si están definidas en config_variables
-  # y están presentes en los datos
-  if (!is.null(config_variables)) {
-    # Variables que queremos incluir si existen en los datos
-    vars_a_incluir <- c("calculo_edad", "grupo_etario_5", "grupo_etario_10")
-    
-    for (var_creada in vars_a_incluir) {
-      if (var_creada %in% names(datos) && !var_creada %in% nombres_vars) {
-        nombres_vars <- c(nombres_vars, var_creada)
-        
-        # Determinar tipo según la variable
-        if (var_creada == "calculo_edad") {
-          tipos_vars <- c(tipos_vars, "cuantitativa")
-        } else if (var_creada %in% c("grupo_etario_5", "grupo_etario_10")) {
-          tipos_vars <- c(tipos_vars, "cualitativa")
-        } else {
-          tipos_vars <- c(tipos_vars, NA)
-        }
-      }
-    }
-  }
-  
+  # Verificar que las variables del YAML existen en los datos
   vars_faltantes <- setdiff(nombres_vars, names(datos))
   if (length(vars_faltantes) > 0) {
     return(list(error = paste("Variables no encontradas:", paste(vars_faltantes, collapse = ", "))))
+  }
+  
+  # Incluir variables creadas automáticamente si existen en los datos
+  # (calculo_edad, grupo_etario_5, grupo_etario_10)
+  vars_creadas_posibles <- c("calculo_edad", "grupo_etario_5", "grupo_etario_10")
+  
+  for (var_creada in vars_creadas_posibles) {
+    if (var_creada %in% names(datos) && !var_creada %in% nombres_vars) {
+      nombres_vars <- c(nombres_vars, var_creada)
+      
+      # Determinar tipo según la variable
+      if (var_creada == "calculo_edad") {
+        tipos_vars <- c(tipos_vars, "cuantitativa")
+      } else if (var_creada %in% c("grupo_etario_5", "grupo_etario_10")) {
+        tipos_vars <- c(tipos_vars, "cualitativa")
+      } else {
+        tipos_vars <- c(tipos_vars, NA)
+      }
+    }
   }
   
   resultados <- list()
@@ -409,20 +407,9 @@ generar_descripcion_univariada <- function(datos, variables_sociodem, config_var
       col_procesada <- as.factor(col_procesada)
     } else if (tipo_final == "cuantitativa") {
       if (!is.numeric(col_procesada)) {
-        col_numerica <- suppressWarnings(as.numeric(as.character(col_procesada)))
-        
-        n_converted <- sum(!is.na(col_numerica))
-        n_total <- sum(!is.na(col_procesada))
-        
-        if (n_total > 0) {
-          proporcion_convertida <- n_converted / n_total
-          
-          if (proporcion_convertida < 0.5) {
-            tipo_final <- "cualitativa"
-            col_procesada <- as.factor(col_original)
-          } else {
-            col_procesada <- col_numerica
-          }
+        col_numerica <- suppressWarnings(as.numeric(col_procesada))
+        if (!all(is.na(col_numerica[!is.na(col_procesada)]))) {
+          col_procesada <- col_numerica
         } else {
           tipo_final <- "cualitativa"
           col_procesada <- as.factor(col_original)
@@ -489,6 +476,7 @@ generar_descripcion_univariada <- function(datos, variables_sociodem, config_var
   
   return(list(resultados = resultados, error = NULL))
 }
+
 
 # Función auxiliar para convertir resultados univariados a HTML para informe descargable
 convertir_univariada_a_html <- function(resultados) {
@@ -561,7 +549,7 @@ convertir_univariada_a_html <- function(resultados) {
   return(paste(html_parts, collapse = "\n"))
 }
 
-# Función para convertir tasas de ataque a HTML para informe
+# Función para convertir tasas de ataque a HTML (SOLO TASAS)
 convertir_tasas_a_html <- function(resultados_tasas) {
   if (is.null(resultados_tasas) || length(resultados_tasas) == 0) {
     return("<p class='alert alert-warning'>No se pudieron calcular tasas de ataque</p>")
@@ -595,14 +583,6 @@ convertir_tasas_a_html <- function(resultados_tasas) {
               <td>%d</td>
               <td>%s</td>
             </tr>
-            <tr>
-              <td><strong>Riesgo Relativo (RR)</strong></td>
-              <td colspan='3'>%s</td>
-            </tr>
-            <tr>
-              <td><strong>Diferencia de Riesgo</strong></td>
-              <td colspan='3'>%s</td>
-            </tr>
           </tbody>
         </table>
       </div>
@@ -614,13 +594,58 @@ convertir_tasas_a_html <- function(resultados_tasas) {
     ifelse(!is.na(res$tasa_expuestos), sprintf("%.1f%%", res$tasa_expuestos * 100), "N/A"),
     res$casos_no_expuestos,
     res$n_no_expuestos,
-    ifelse(!is.na(res$tasa_no_expuestos), sprintf("%.1f%%", res$tasa_no_expuestos * 100), "N/A"),
-    ifelse(!is.na(res$riesgo_relativo), sprintf("%.2f", res$riesgo_relativo), "No calculable"),
-    ifelse(!is.na(res$diferencia_riesgo), sprintf("%.3f", res$diferencia_riesgo), "No calculable")
+    ifelse(!is.na(res$tasa_no_expuestos), sprintf("%.1f%%", res$tasa_no_expuestos * 100), "N/A")
     )
   })
   
   return(paste(tablas_html, collapse = "\n"))
+}
+
+# Función para convertir riesgo relativo a HTML
+convertir_rr_a_html <- function(resultados_rr) {
+  if (is.null(resultados_rr) || length(resultados_rr) == 0) {
+    return("<p class='alert alert-warning'>No se pudieron calcular riesgos relativos</p>")
+  }
+  
+  filas_html <- sapply(names(resultados_rr), function(exposicion) {
+    res <- resultados_rr[[exposicion]]
+    
+    sprintf("<tr><td><strong>%s</strong></td><td>%.2f</td><td>%s</td><td>%.2f</td><td>%s</td></tr>",
+            exposicion,
+            res$riesgo_relativo,
+            ifelse(!is.na(res$ic_95_inf), sprintf("[%.2f-%.2f]", res$ic_95_inf, res$ic_95_sup), "N/A"),
+            res$diferencia_riesgo,
+            ifelse(!is.na(res$p_valor), 
+                   ifelse(res$p_valor < 0.001, "<0.001", sprintf("%.3f", res$p_valor)), 
+                   "N/A")
+    )
+  })
+  
+  html_tabla <- sprintf("
+    <table class='table table-sm table-bordered table-striped'>
+      <thead>
+        <tr>
+          <th>Exposición</th>
+          <th>Riesgo Relativo</th>
+          <th>IC 95%%</th>
+          <th>Diferencia de Riesgo</th>
+          <th>Valor p</th>
+        </tr>
+      </thead>
+      <tbody>
+        %s
+      </tbody>
+    </table>
+    <div class='alert alert-info' style='margin-top: 15px;'>
+      <small>
+        <strong>Interpretación:</strong>
+        RR > 1: asociación positiva (mayor riesgo), RR < 1: asociación negativa (menor riesgo), 
+        RR = 1: no asociación. IC 95%% que no incluye 1 indica significancia estadística.
+      </small>
+    </div>
+  ", paste(filas_html, collapse = "\n"))
+  
+  return(html_tabla)
 }
 
 # Función para convertir odds ratio a HTML para informe
@@ -654,9 +679,6 @@ convertir_or_a_html <- function(resultados_or) {
           <th>Valor p</th>
         </tr>
       </thead>
-      <tbody>
-        %s
-      </tbody>
     </table>
     <div class='alert alert-info' style='margin-top: 15px;'>
       <small>
@@ -669,6 +691,7 @@ convertir_or_a_html <- function(resultados_or) {
   
   return(html_tabla)
 }
+
 # ===========================================================================
 # NUEVAS FUNCIONES PARA FRECUENCIA_COMBINADA_SINTOMAS
 # ===========================================================================
@@ -860,284 +883,224 @@ render_univariada <- function(resultados) {
 }
 
 # =========================
-# FUNCIONES PARA TASAS DE ATAQUE Y ODDS RATIO
+# FUNCIONES OPTIMIZADAS PARA TASAS DE ATAQUE Y RIESGO RELATIVO/ODDS RATIO
 # =========================
 
+# Optimización: Conversión a lógico más eficiente con vectorización
 convertir_a_logico <- function(x) {
+  # Vectores de valores verdaderos y falsos (constantes)
+  .true_vals <- c("VERDADERO", "TRUE", "T", "SI", "SÍ", "YES", "Y", "1", "V", "S")
+  .false_vals <- c("FALSO", "FALSE", "F", "NO", "N", "0")
+  
+  if (is.logical(x)) return(x)
+  if (is.numeric(x)) return(ifelse(x == 1, TRUE, ifelse(x == 0, FALSE, NA)))
+  if (is.factor(x)) x <- as.character(x)
+  
   if (is.character(x)) {
-    normalizado <- toupper(trimws(x))
-    normalizado <- chartr("ÁÉÍÓÚ", "AEIOU", normalizado)
-    
-    result <- rep(NA, length(normalizado))
-    
-    true_values <- c("VERDADERO", "TRUE", "T", "SI", "SÍ", "YES", "Y", "1", "V", "S")
-    result[normalizado %in% true_values] <- TRUE
-    
-    false_values <- c("FALSO", "FALSE", "F", "NO", "N", "0")
-    result[normalizado %in% false_values] <- FALSE
-    
+    # Normalización eficiente en un solo paso
+    x_norm <- chartr("ÁÉÍÓÚ", "AEIOU", toupper(trimws(x)))
+    result <- rep(NA, length(x_norm))
+    result[x_norm %in% .true_vals] <- TRUE
+    result[x_norm %in% .false_vals] <- FALSE
     return(result)
-  } else if (is.logical(x)) {
-    return(x)
-  } else if (is.numeric(x)) {
-    result <- rep(NA, length(x))
-    result[x == 1] <- TRUE
-    result[x == 0] <- FALSE
-    return(result)
-  } else if (is.factor(x)) {
-    return(convertir_a_logico(as.character(x)))
-  } else {
-    return(as.logical(x))
   }
+  
+  return(as.logical(x))
 }
 
+# Optimización: Solo usar para debug, evitar en producción
 analizar_valores_logicos <- function(x, nombre = "variable") {
-  if (is.character(x)) {
-    valores_unicos <- unique(toupper(trimws(x)))
-    cat(sprintf("\n%s: Valores únicos encontrados (%d):\n", nombre, length(valores_unicos)))
-    print(valores_unicos)
-    
-    convertidos <- convertir_a_logico(x)
-    cat(sprintf("Distribución después de conversión:\n"))
-    print(table(convertidos, useNA = "always"))
-  }
-  return(invisible(NULL))
+  if (!debug || !is.character(x)) return(invisible(NULL))
+  cat(sprintf("\nValores únicos en '%s':\n", nombre))
+  print(unique(toupper(trimws(x[!is.na(x)]))))
 }
 
+# OPTIMIZACIÓN: Función genérica para preparar datos 2x2 (evita duplicación)
+preparar_datos_2x2 <- function(datos, variable_evento, exposicion, variable_participo, debug) {
+  if (debug) analizar_valores_logicos(datos[[exposicion]], exposicion)
+  
+  # Filtrar participantes si aplica (evita copias innecesarias)
+  if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
+    datos <- datos[convertir_a_logico(datos[[variable_participo]]) == TRUE, ]
+  }
+  
+  # Preparar datos (operación única, sin copias intermedias)
+  evento_log <- convertir_a_logico(datos[[variable_evento]])
+  expos_log <- convertir_a_logico(datos[[exposicion]])
+  
+  # Filtrar NAs de una vez
+  validos <- !is.na(evento_log) & !is.na(expos_log)
+  
+  if (sum(validos) == 0) return(NULL)
+  
+  # Crear tabla 2x2
+  tab <- table(Exposicion = expos_log[validos], Evento = evento_log[validos])
+  
+  # Validar estructura
+  if (nrow(tab) < 2 || ncol(tab) < 2) return(NULL)
+  if (!("TRUE" %in% rownames(tab) && "FALSE" %in% rownames(tab))) return(NULL)
+  
+  return(list(
+    tabla = tab,
+    a = tab["TRUE", "TRUE"],
+    b = tab["TRUE", "FALSE"],
+    c = tab["FALSE", "TRUE"],
+    d = tab["FALSE", "FALSE"],
+    n_total = sum(validos)
+  ))
+}
+
+# MODIFICADO: Calcular solo tasas de ataque (sin RR ni diferencia de riesgo)
 calcular_tasas_ataque <- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
   
-  if (debug) {
-    cat("\n=== DEBUGGING TASAS DE ATAQUE ===\n")
-    cat(sprintf("Variable evento: %s\n", variable_evento))
-    if (variable_evento %in% names(datos)) {
-      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
-    }
-  }
-  
-  if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
-    datos <- datos |> 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |>
-      filter(participa == TRUE) |>
-      select(-participa)
+  resultados <- lapply(variables_exposicion, function(exposicion) {
+    if (!exposicion %in% names(datos)) return(NULL)
     
-    if (debug) {
-      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
-                  variable_participo, nrow(datos)))
-    }
-  }
-  
-  resultados <- list()
-  
-  for (exposicion in variables_exposicion) {
-    if (!exposicion %in% names(datos)) {
-      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
-      next
-    }
+    prep <- preparar_datos_2x2(datos, variable_evento, exposicion, variable_participo, debug)
+    if (is.null(prep)) return(NULL)
     
-    if (debug) {
-      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
-      analizar_valores_logicos(datos[[exposicion]], exposicion)
-    }
+    n1 <- prep$a + prep$b
+    n0 <- prep$c + prep$d
     
-    datos_exp <- datos |>
-      mutate(
-        evento = convertir_a_logico(.data[[variable_evento]]),
-        expos = convertir_a_logico(.data[[exposicion]])
-      ) |>
-      filter(!is.na(evento) & !is.na(expos))
-    
-    if (debug) {
-      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
-      cat("Tabla 2x2:\n")
-      if (nrow(datos_exp) > 0) {
-        tab <- table(
-          Exposicion = datos_exp$expos,
-          Evento = datos_exp$evento
-        )
-        print(tab)
-      }
-    }
-    
-    if (nrow(datos_exp) == 0) {
-      if (debug) cat("No hay datos válidos para esta exposición\n")
-      next
-    }
-    
-    tab <- table(
-      Exposicion = datos_exp$expos,
-      Evento = datos_exp$evento
+    list(
+      tabla = prep$tabla,
+      n_expuestos = n1,
+      n_no_expuestos = n0,
+      casos_expuestos = prep$a,
+      casos_no_expuestos = prep$c,
+      tasa_expuestos = if(n1 > 0) prep$a / n1 else NA,
+      tasa_no_expuestos = if(n0 > 0) prep$c / n0 else NA,
+      n_total = prep$n_total
     )
-    
-    if (nrow(tab) >= 2 && ncol(tab) >= 2) {
-      if ("TRUE" %in% rownames(tab) && "FALSE" %in% rownames(tab)) {
-        expuestos_total <- sum(tab["TRUE", ])
-        no_expuestos_total <- sum(tab["FALSE", ])
-        
-        tasa_expuestos <- ifelse(expuestos_total > 0, 
-                                 tab["TRUE", "TRUE"] / expuestos_total, 
-                                 NA)
-        tasa_no_expuestos <- ifelse(no_expuestos_total > 0, 
-                                    tab["FALSE", "TRUE"] / no_expuestos_total, 
-                                    NA)
-        
-        rr <- ifelse(!is.na(tasa_no_expuestos) && tasa_no_expuestos > 0,
-                     tasa_expuestos / tasa_no_expuestos,
-                     NA)
-        
-        dr <- ifelse(!is.na(tasa_expuestos) && !is.na(tasa_no_expuestos),
-                     tasa_expuestos - tasa_no_expuestos,
-                     NA)
-        
-        resultados[[exposicion]] <- list(
-          tabla = tab,
-          n_expuestos = expuestos_total,
-          n_no_expuestos = no_expuestos_total,
-          casos_expuestos = tab["TRUE", "TRUE"],
-          casos_no_expuestos = tab["FALSE", "TRUE"],
-          tasa_expuestos = tasa_expuestos,
-          tasa_no_expuestos = tasa_no_expuestos,
-          riesgo_relativo = rr,
-          diferencia_riesgo = dr,
-          n_total = nrow(datos_exp)
-        )
-      } else {
-        if (debug) cat("Tabla no tiene filas TRUE y FALSE\n")
-      }
-    } else {
-      if (debug) cat(sprintf("Tabla no es 2x2: dimensiones %d x %d\n", nrow(tab), ncol(tab)))
-    }
-  }
+  })
   
-  if (debug) cat(sprintf("\nTotal de exposiciones procesadas: %d\n", length(resultados)))
-  
-  return(resultados)
+  names(resultados) <- variables_exposicion
+  resultados[!sapply(resultados, is.null)]
 }
 
+# NUEVA FUNCIÓN OPTIMIZADA: Calcular riesgo relativo
+calcular_riesgo_relativo <- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
+  
+  resultados <- lapply(variables_exposicion, function(exposicion) {
+    if (!exposicion %in% names(datos)) return(NULL)
+    
+    prep <- preparar_datos_2x2(datos, variable_evento, exposicion, variable_participo, debug)
+    if (is.null(prep)) return(NULL)
+    
+    n1 <- prep$a + prep$b
+    n0 <- prep$c + prep$d
+    
+    p1 <- if(n1 > 0) prep$a / n1 else NA
+    p0 <- if(n0 > 0) prep$c / n0 else NA
+    
+    rr <- if(!is.na(p0) && p0 > 0) p1 / p0 else NA
+    dr <- if(!is.na(p1) && !is.na(p0)) p1 - p0 else NA
+    
+    # IC 95% para RR (método de Katz)
+    if (!is.na(rr) && prep$a > 0 && prep$c > 0) {
+      se_log_rr <- sqrt((1/prep$a - 1/n1) + (1/prep$c - 1/n0))
+      log_rr <- log(rr)
+      li <- exp(log_rr - 1.96 * se_log_rr)
+      ls <- exp(log_rr + 1.96 * se_log_rr)
+    } else {
+      li <- NA
+      ls <- NA
+    }
+    
+    # Chi-cuadrado y p-valor (optimizado)
+    total <- prep$n_total
+    exp_a <- n1 * (prep$a + prep$c) / total
+    exp_b <- n1 * (prep$b + prep$d) / total
+    exp_c <- n0 * (prep$a + prep$c) / total
+    exp_d <- n0 * (prep$b + prep$d) / total
+    
+    chi2 <- sum(c(
+      if(exp_a > 0) (prep$a - exp_a)^2 / exp_a else 0,
+      if(exp_b > 0) (prep$b - exp_b)^2 / exp_b else 0,
+      if(exp_c > 0) (prep$c - exp_c)^2 / exp_c else 0,
+      if(exp_d > 0) (prep$d - exp_d)^2 / exp_d else 0
+    ))
+    
+    list(
+      tabla = prep$tabla,
+      a = prep$a, b = prep$b, c = prep$c, d = prep$d,
+      tasa_expuestos = p1,
+      tasa_no_expuestos = p0,
+      riesgo_relativo = rr,
+      diferencia_riesgo = dr,
+      ic_95_inf = li,
+      ic_95_sup = ls,
+      p_valor = pchisq(chi2, df = 1, lower.tail = FALSE),
+      n_total = prep$n_total
+    )
+  })
+  
+  names(resultados) <- variables_exposicion
+  resultados[!sapply(resultados, is.null)]
+}
+
+# FUNCIÓN OPTIMIZADA: Calcular odds ratio
 calcular_odds_ratio <- function(datos, variable_evento, variables_exposicion, variable_participo = NULL, debug = FALSE) {
   
-  if (debug) {
-    cat("\n=== DEBUGGING ODDS RATIO ===\n")
-    cat(sprintf("Variable evento: %s\n", variable_evento))
-    if (variable_evento %in% names(datos)) {
-      analizar_valores_logicos(datos[[variable_evento]], variable_evento)
-    }
-  }
-  
-  if (!is.null(variable_participo) && variable_participo %in% names(datos)) {
-    datos <- datos |> 
-      mutate(participa = convertir_a_logico(.data[[variable_participo]])) |>
-      filter(participa == TRUE) |>
-      select(-participa)
+  resultados <- lapply(variables_exposicion, function(exposicion) {
+    if (!exposicion %in% names(datos)) return(NULL)
     
-    if (debug) {
-      cat(sprintf("\nFiltrado por participación (%s): %d filas después de filtrar\n", 
-                  variable_participo, nrow(datos)))
-    }
-  }
-  
-  resultados <- list()
-  
-  for (exposicion in variables_exposicion) {
-    if (!exposicion %in% names(datos)) {
-      if (debug) cat(sprintf("\nExposición %s no encontrada en datos\n", exposicion))
-      next
+    prep <- preparar_datos_2x2(datos, variable_evento, exposicion, variable_participo, debug)
+    if (is.null(prep)) return(NULL)
+    
+    # Calcular OR
+    or <- if(prep$b > 0 && prep$c > 0) (prep$a * prep$d) / (prep$b * prep$c) else NA
+    
+    # IC 95% para OR
+    if (!is.na(or) && prep$a > 0 && prep$b > 0 && prep$c > 0 && prep$d > 0) {
+      se_log_or <- sqrt(1/prep$a + 1/prep$b + 1/prep$c + 1/prep$d)
+      log_or <- log(or)
+      li <- exp(log_or - 1.96 * se_log_or)
+      ls <- exp(log_or + 1.96 * se_log_or)
+    } else {
+      li <- NA
+      ls <- NA
     }
     
-    if (debug) {
-      cat(sprintf("\n--- Analizando exposición: %s ---\n", exposicion))
-      analizar_valores_logicos(datos[[exposicion]], exposicion)
-    }
+    # Chi-cuadrado y p-valor (reutilizando lógica optimizada)
+    total <- prep$n_total
+    n1 <- prep$a + prep$b
+    n0 <- prep$c + prep$d
     
-    datos_exp <- datos |>
-      mutate(
-        evento = convertir_a_logico(.data[[variable_evento]]),
-        expos = convertir_a_logico(.data[[exposicion]])
-      ) |>
-      filter(!is.na(evento) & !is.na(expos))
+    exp_a <- n1 * (prep$a + prep$c) / total
+    exp_b <- n1 * (prep$b + prep$d) / total
+    exp_c <- n0 * (prep$a + prep$c) / total
+    exp_d <- n0 * (prep$b + prep$d) / total
     
-    if (debug) {
-      cat(sprintf("Filas después de filtrar NAs: %d\n", nrow(datos_exp)))
-      cat("Tabla 2x2:\n")
-      if (nrow(datos_exp) > 0) {
-        tab <- table(
-          Exposicion = datos_exp$expos,
-          Evento = datos_exp$evento
-        )
-        print(tab)
-      }
-    }
+    chi2 <- sum(c(
+      if(exp_a > 0) (prep$a - exp_a)^2 / exp_a else 0,
+      if(exp_b > 0) (prep$b - exp_b)^2 / exp_b else 0,
+      if(exp_c > 0) (prep$c - exp_c)^2 / exp_c else 0,
+      if(exp_d > 0) (prep$d - exp_d)^2 / exp_d else 0
+    ))
     
-    if (nrow(datos_exp) == 0) {
-      if (debug) cat("No hay datos válidos para esta exposición\n")
-      next
-    }
-    
-    tab <- table(
-      Exposicion = datos_exp$expos,
-      Evento = datos_exp$evento
+    list(
+      tabla = prep$tabla,
+      a = prep$a, b = prep$b, c = prep$c, d = prep$d,
+      odds_ratio = or,
+      ic_95_inf = li,
+      ic_95_sup = ls,
+      chi_cuadrado = chi2,
+      p_valor = pchisq(chi2, df = 1, lower.tail = FALSE),
+      n_total = prep$n_total
     )
-    
-    if (nrow(tab) >= 2 && ncol(tab) >= 2) {
-      if ("TRUE" %in% rownames(tab) && "FALSE" %in% rownames(tab)) {
-        a <- tab["TRUE", "TRUE"]
-        b <- tab["TRUE", "FALSE"]
-        c <- tab["FALSE", "TRUE"]
-        d <- tab["FALSE", "FALSE"]
-        
-        or <- ifelse(b > 0 && c > 0, (a * d) / (b * c), NA)
-        
-        if (!is.na(or) && a > 0 && b > 0 && c > 0 && d > 0) {
-          se_log_or <- sqrt(1/a + 1/b + 1/c + 1/d)
-          log_or <- log(or)
-          li <- exp(log_or - 1.96 * se_log_or)
-          ls <- exp(log_or + 1.96 * se_log_or)
-        } else {
-          li <- NA
-          ls <- NA
-        }
-        
-        total <- a + b + c + d
-        if (total > 0) {
-          esperado_a <- (a + b) * (a + c) / total
-          esperado_b <- (a + b) * (b + d) / total
-          esperado_c <- (c + d) * (a + c) / total
-          esperado_d <- (c + d) * (b + d) / total
-          
-          chi2 <- 0
-          if (esperado_a > 0) chi2 <- chi2 + ((a - esperado_a)^2 / esperado_a)
-          if (esperado_b > 0) chi2 <- chi2 + ((b - esperado_b)^2 / esperado_b)
-          if (esperado_c > 0) chi2 <- chi2 + ((c - esperado_c)^2 / esperado_c)
-          if (esperado_d > 0) chi2 <- chi2 + ((d - esperado_d)^2 / esperado_d)
-          
-          p_valor <- pchisq(chi2, df = 1, lower.tail = FALSE)
-        } else {
-          chi2 <- NA
-          p_valor <- NA
-        }
-        
-        resultados[[exposicion]] <- list(
-          tabla = tab,
-          a = a, b = b, c = c, d = d,
-          odds_ratio = or,
-          ic_95_inf = li,
-          ic_95_sup = ls,
-          chi_cuadrado = chi2,
-          p_valor = p_valor,
-          n_total = nrow(datos_exp)
-        )
-      }
-    }
-  }
+  })
   
-  return(resultados)
+  names(resultados) <- variables_exposicion
+  resultados[!sapply(resultados, is.null)]
 }
 
 # =========================
-# FUNCIÓN PARA FOREST PLOT
+# FUNCIÓN OPTIMIZADA PARA FOREST PLOT (OR y RR)
 # =========================
 
-crear_forest_plot <- function(resultados_or) {
-  if (is.null(resultados_or) || length(resultados_or) == 0) {
+crear_forest_plot <- function(resultados, tipo = "OR") {
+  if (is.null(resultados) || length(resultados) == 0) {
     return(ggplot() + 
              annotate("text", x = 0.5, y = 0.5, 
                      label = "No hay datos para crear el forest plot", 
@@ -1145,47 +1108,49 @@ crear_forest_plot <- function(resultados_or) {
              theme_void())
   }
   
-  # Crear dataframe para el plot
+  # Determinar campos y etiquetas según tipo (una sola vez)
+  medida_campo <- if(tipo == "OR") "odds_ratio" else "riesgo_relativo"
+  titulo <- paste0("Forest Plot - ", if(tipo == "OR") "Odds Ratios" else "Riesgos Relativos", " por Exposición")
+  eje_x <- paste0(if(tipo == "OR") "Odds Ratio" else "Riesgo Relativo", " (escala logarítmica)")
+  caption_text <- paste0("Líneas verticales representan intervalos de confianza al 95%\n",
+                        tipo, " > 1: mayor riesgo, ", tipo, " < 1: menor riesgo")
+  
+  # Extraer datos de una vez (evitar múltiples llamadas a sapply)
+  n <- length(resultados)
   datos_plot <- data.frame(
-    Exposicion = names(resultados_or),
-    OR = sapply(resultados_or, function(x) x$odds_ratio),
-    LI = sapply(resultados_or, function(x) x$ic_95_inf),
-    LS = sapply(resultados_or, function(x) x$ic_95_sup),
-    Significativo = sapply(resultados_or, function(x) {
-      if (is.na(x$ic_95_inf) || is.na(x$ic_95_sup)) return(FALSE)
-      return(x$ic_95_inf > 1 || x$ic_95_sup < 1)
-    })
+    Exposicion = names(resultados),
+    Medida = vapply(resultados, function(x) x[[medida_campo]], numeric(1)),
+    LI = vapply(resultados, function(x) x$ic_95_inf, numeric(1)),
+    LS = vapply(resultados, function(x) x$ic_95_sup, numeric(1)),
+    stringsAsFactors = FALSE
   )
   
-  # Ordenar por OR
-  datos_plot <- datos_plot[order(datos_plot$OR, decreasing = TRUE), ]
-  datos_plot$Exposicion <- factor(datos_plot$Exposicion, 
-                                  levels = rev(datos_plot$Exposicion))
+  # Calcular significancia vectorialmente
+  datos_plot$Significativo <- (!is.na(datos_plot$LI) & !is.na(datos_plot$LS)) & 
+                               (datos_plot$LI > 1 | datos_plot$LS < 1)
   
-  # Calcular límites del gráfico
-  min_lim <- min(c(datos_plot$LI, 0.1), na.rm = TRUE) * 0.8
-  max_lim <- max(c(datos_plot$LS, 10), na.rm = TRUE) * 1.2
+  # Ordenar y factorizar
+  datos_plot <- datos_plot[order(datos_plot$Medida, decreasing = TRUE), ]
+  datos_plot$Exposicion <- factor(datos_plot$Exposicion, levels = rev(datos_plot$Exposicion))
+  
+  # Límites del gráfico (cálculo eficiente)
+  rango_valido <- c(datos_plot$LI[!is.na(datos_plot$LI)], datos_plot$LS[!is.na(datos_plot$LS)])
+  min_lim <- max(0.05, min(c(rango_valido, 0.1), na.rm = TRUE) * 0.8)
+  max_lim <- min(20, max(c(rango_valido, 10), na.rm = TRUE) * 1.2)
   
   # Crear el forest plot
-  p <- ggplot(datos_plot, aes(x = OR, y = Exposicion)) +
+  p <- ggplot(datos_plot, aes(x = Medida, y = Exposicion)) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "red", alpha = 0.7) +
-    geom_errorbarh(aes(xmin = LI, xmax = LS), 
-                   height = 0.2, 
-                   color = ifelse(datos_plot$Significativo, "darkblue", "gray50"),
-                   size = 1) +
-    geom_point(aes(color = Significativo), 
-               size = 3, 
-               shape = 18) +
-    scale_color_manual(values = c("FALSE" = "gray50", "TRUE" = "darkblue")) +
+    geom_errorbarh(aes(xmin = LI, xmax = LS, color = Significativo), 
+                   height = 0.2, size = 1) +
+    geom_point(aes(color = Significativo), size = 3, shape = 18) +
+    scale_color_manual(values = c("FALSE" = "gray50", "TRUE" = "darkblue"), guide = "none") +
     scale_x_log10(limits = c(min_lim, max_lim),
                   breaks = c(0.1, 0.2, 0.5, 1, 2, 5, 10),
                   labels = c("0.1", "0.2", "0.5", "1", "2", "5", "10")) +
-    labs(
-      title = "Forest Plot - Odds Ratios por Exposición",
-      x = "Odds Ratio (escala logarítmica)",
-      y = "Exposición",
-      caption = "Líneas verticales representan intervalos de confianza al 95%\nOR > 1: mayor riesgo, OR < 1: menor riesgo"
-    ) +
+    geom_text(aes(label = sprintf("%.2f [%.2f-%.2f]", Medida, LI, LS), x = max_lim * 0.9), 
+              hjust = 1, vjust = 0, size = 3.5, color = "black") +
+    labs(title = titulo, x = eje_x, y = "Exposición", caption = caption_text) +
     theme_minimal(base_size = 12) +
     theme(
       plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
@@ -1193,12 +1158,8 @@ crear_forest_plot <- function(resultados_or) {
       axis.text.y = element_text(size = 11),
       panel.grid.major = element_line(color = "gray90"),
       panel.grid.minor = element_blank(),
-      legend.position = "none",
       plot.caption = element_text(size = 10, color = "gray50", hjust = 0)
-    ) +
-    geom_text(aes(label = sprintf("%.2f [%.2f-%.2f]", OR, LI, LS),
-                  x = max_lim * 0.9), 
-              hjust = 1, vjust = 0, size = 3.5, color = "black")
+    )
   
   return(p)
 }
@@ -1274,6 +1235,111 @@ render_tabla_tasas <- function(resultados_tasas) {
   tagList(tablas)
 }
 
+render_tabla_tasas <- function(resultados_tasas) {
+  if (is.null(resultados_tasas) || length(resultados_tasas) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      tags$h5("No se pudieron calcular tasas de ataque"),
+      tags$p("Posibles causas:"),
+      tags$ul(
+        tags$li("Las variables no contienen valores lógicos (VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0)"),
+        tags$li("Faltan datos en las variables de evento o exposición"),
+        tags$li("Las tablas 2x2 no pudieron construirse (no hay suficiente variación en los datos)"),
+        tags$li("Verifique que las columnas en el CSV coincidan con las especificadas en el YAML")
+      ),
+      tags$p("Tip: Las variables lógicas deben usar valores como: VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0")
+    ))
+  }
+  
+  tablas <- lapply(names(resultados_tasas), function(exposicion) {
+    res <- resultados_tasas[[exposicion]]
+    
+    tagList(
+      h5(strong(exposicion), sprintf(" (n=%d)", res$n_total)),
+      tags$table(
+        class = "table table-sm table-bordered",
+        style = "width: auto; margin-bottom: 20px;",
+        tags$thead(
+          tags$tr(
+            tags$th(""),
+            tags$th("Enfermos"),
+            tags$th("Total"),
+            tags$th("Tasa de ataque")
+          )
+        ),
+        tags$tbody(
+          tags$tr(
+            tags$td(strong("Expuestos")),
+            tags$td(res$casos_expuestos),
+            tags$td(res$n_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_expuestos), 
+                          sprintf("%.1f%%", res$tasa_expuestos * 100), 
+                          "N/A"))
+          ),
+          tags$tr(
+            tags$td(strong("No expuestos")),
+            tags$td(res$casos_no_expuestos),
+            tags$td(res$n_no_expuestos),
+            tags$td(ifelse(!is.na(res$tasa_no_expuestos), 
+                          sprintf("%.1f%%", res$tasa_no_expuestos * 100), 
+                          "N/A"))
+          )
+        )
+      )
+    )
+  })
+  
+  tagList(tablas)
+}
+
+render_tabla_rr <- function(resultados_rr) {
+  if (is.null(resultados_rr) || length(resultados_rr) == 0) {
+    return(div(
+      class = "alert alert-warning",
+      "No se pudieron calcular riesgos relativos"
+    ))
+  }
+  
+  filas <- lapply(names(resultados_rr), function(exposicion) {
+    res <- resultados_rr[[exposicion]]
+    
+    tags$tr(
+      tags$td(strong(exposicion)),
+      tags$td(sprintf("%.2f", res$riesgo_relativo)),
+      tags$td(ifelse(!is.na(res$ic_95_inf), sprintf("[%.2f-%.2f]", res$ic_95_inf, res$ic_95_sup), "N/A")),
+      tags$td(sprintf("%.2f", res$diferencia_riesgo)),
+      tags$td(ifelse(!is.na(res$p_valor), 
+                    ifelse(res$p_valor < 0.001, "<0.001", sprintf("%.3f", res$p_valor)), 
+                    "N/A"))
+    )
+  })
+  
+  tagList(
+    tags$table(
+      class = "table table-sm table-bordered table-striped",
+      tags$thead(
+        tags$tr(
+          tags$th("Exposición"),
+          tags$th("Riesgo Relativo"),
+          tags$th("IC 95%"),
+          tags$th("Diferencia de Riesgo"),
+          tags$th("Valor p")
+        )
+      ),
+      tags$tbody(filas)
+    ),
+    
+    div(
+      class = "alert alert-info mt-3",
+      tags$small(
+        strong("Interpretación:"),
+        "RR > 1: asociación positiva (mayor riesgo), RR < 1: asociación negativa (menor riesgo), ",
+        "RR = 1: no asociación. IC 95% que no incluye 1 indica significancia estadística."
+      )
+    )
+  )
+}
+
 render_tabla_or <- function(resultados_or) {
   if (is.null(resultados_or) || length(resultados_or) == 0) {
     return(div(
@@ -1322,17 +1388,27 @@ render_tabla_or <- function(resultados_or) {
   )
 }
 
-# Convierte un gráfico ggplot en una etiqueta <img> con base64
-# Función para convertir gráficos a Base64 de forma segura
+
+# OPTIMIZACIÓN: Función más eficiente para convertir gráficos a Base64
 plot_to_b64 <- function(p) {
   if (is.null(p)) return(NULL)
-  #library(base64enc)
-  tmp <- tempfile(fileext = ".png")
-  # Ajustamos dimensiones para el informe
-  ggsave(tmp, plot = p, width = 6, height = 4, dpi = 200)
-  encoded <- base64enc::base64encode(readBin(tmp, "raw", file.info(tmp)$size))
-  unlink(tmp)
-  return(paste0("data:image/png;base64,", encoded))
+  
+  tryCatch({
+    tmp <- tempfile(fileext = ".png")
+    on.exit(unlink(tmp), add = TRUE)  # Asegurar limpieza
+    
+    # Configuración optimizada de ggsave
+    ggsave(tmp, plot = p, width = 6, height = 4, dpi = 150, 
+           device = "png", bg = "white")
+    
+    # Lectura y codificación eficiente
+    file_size <- file.info(tmp)$size
+    raw_data <- readBin(tmp, "raw", n = file_size)
+    paste0("data:image/png;base64,", base64enc::base64encode(raw_data))
+  }, error = function(e) {
+    warning("Error al convertir gráfico a Base64: ", e$message)
+    NULL
+  })
 }
 
 logo_base64 <- "data:image/gif;base64,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
@@ -1411,11 +1487,14 @@ server <- function(input, output, session) {
     datos = NULL,
     solicitud = NULL,
     ejecutado = FALSE,
-    resultados_or = NULL,  # Para almacenar resultados de OR
+    resultados_or = NULL,
+    resultados_rr = NULL,  # NUEVO
     desc = NULL,
     resultados_tasas = NULL,
     grafico_or = NULL,
+    grafico_rr = NULL,  # NUEVO
     grafico_curva = NULL,
+    freq_combinada = NULL,
     listo = FALSE
   )
   
@@ -1455,10 +1534,13 @@ server <- function(input, output, session) {
     estado$solicitud <- NULL
     estado$ejecutado <- FALSE
     estado$resultados_or <- NULL
+    estado$resultados_rr <- NULL
     estado$desc <- NULL
     estado$resultados_tasas <- NULL
     estado$grafico_or <- NULL
+    estado$grafico_rr <- NULL
     estado$grafico_curva <- NULL
+    estado$freq_combinada <- NULL
     reset("datos")
     reset("yaml")
     showNotification("Vista limpiada", type = "warning")
@@ -1648,7 +1730,7 @@ server <- function(input, output, session) {
     }
   })
   
-  output$resultado <- renderUI({
+output$resultado <- renderUI({
     if (!estado$ejecutado) return(NULL)
     req(input$ejecutar > 0)
     
@@ -1694,6 +1776,20 @@ server <- function(input, output, session) {
       )
     }
     
+    # NUEVO: Riesgo relativo con forest plot
+    if (length(productos) > 0 && "riesgo_relativo_por_exposicion" %in% productos) {
+      elementos <- tagList(
+        elementos,
+        h3("Riesgo relativo por exposición", style = "color: #34495e;"),
+        p("Asociación entre exposición a alimentos y enfermedad (riesgo relativo):"),
+        uiOutput("tabla_rr"),
+        h3("Forest Plot de Riesgos Relativos", style = "color: #34495e;"),
+        p("Visualización gráfica de los riesgos relativos con intervalos de confianza:"),
+        plotOutput("forest_plot_rr", height = "600px"),
+        hr()
+      )
+    }
+    
     if (length(productos) > 0 && "odds_ratio_por_exposicion" %in% productos) {
       elementos <- tagList(
         elementos,
@@ -1702,7 +1798,7 @@ server <- function(input, output, session) {
         uiOutput("tabla_or"),
         h3("Forest Plot de Odds Ratios", style = "color: #34495e;"),
         p("Visualización gráfica de los odds ratios con intervalos de confianza:"),
-        plotOutput("forest_plot", height = "600px"),
+        plotOutput("forest_plot_or", height = "600px"),
         hr()
       )
     }
@@ -1813,6 +1909,50 @@ server <- function(input, output, session) {
     render_tabla_tasas(resultados_tasas)
   })
   
+ # NUEVO: Output para riesgo relativo
+  output$tabla_rr <- renderUI({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    vars <- info$vars
+    
+    if (is.null(vars$evento) || is.null(vars$exposicion)) {
+      return(div(
+        class = "alert alert-warning",
+        "Faltan definiciones de evento o exposiciones en el YAML"
+      ))
+    }
+    
+    variable_evento <- vars$evento
+    variables_exposicion <- vars$exposicion
+    variable_participo <- vars$participo
+    
+    if (!variable_evento %in% names(info$datos)) {
+      return(div(
+        class = "alert alert-warning",
+        paste("Variable de evento no encontrada:", variable_evento)
+      ))
+    }
+    
+    resultados_rr <- calcular_riesgo_relativo(
+      datos = info$datos,
+      variable_evento = variable_evento,
+      variables_exposicion = variables_exposicion,
+      variable_participo = variable_participo,
+      debug = FALSE
+    )
+    
+    estado$resultados_rr <- resultados_rr
+    
+    render_tabla_rr(resultados_rr)
+  })
+  
+  
+  
+  
   output$tabla_or <- renderUI({
     req(input$ejecutar > 0)
     
@@ -1895,19 +2035,18 @@ server <- function(input, output, session) {
   # FOREST PLOT
   # =========================
   
-  output$forest_plot <- renderPlot({
+  # Forest plot para OR
+  output$forest_plot_or <- renderPlot({
     req(input$ejecutar > 0)
     
     info <- informe()
     
     if (!is.null(info$error)) return(NULL)
     
-    # Verificar que se solicitó el producto
     if (!"odds_ratio_por_exposicion" %in% info$productos) {
       return(NULL)
     }
     
-    # Usar los resultados almacenados
     if (is.null(estado$resultados_or) || length(estado$resultados_or) == 0) {
       return(ggplot() + 
                annotate("text", x = 0.5, y = 0.5, 
@@ -1916,13 +2055,40 @@ server <- function(input, output, session) {
                theme_void())
     }
     
-    # Crear el forest plot
     library(ggplot2)
-    estado$grafico_or <- crear_forest_plot(estado$resultados_or)
+    estado$grafico_or <- crear_forest_plot(estado$resultados_or, tipo = "OR")
     
     print(estado$grafico_or)
     
   })
+  
+# NUEVO: Forest plot para RR
+  output$forest_plot_rr <- renderPlot({
+    req(input$ejecutar > 0)
+    
+    info <- informe()
+    
+    if (!is.null(info$error)) return(NULL)
+    
+    if (!"riesgo_relativo_por_exposicion" %in% info$productos) {
+      return(NULL)
+    }
+    
+    if (is.null(estado$resultados_rr) || length(estado$resultados_rr) == 0) {
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, 
+                       label = "No hay datos de riesgos relativos para crear el forest plot", 
+                       size = 6) +
+               theme_void())
+    }
+    
+    library(ggplot2)
+    estado$grafico_rr <- crear_forest_plot(estado$resultados_rr, tipo = "RR")
+    
+    print(estado$grafico_rr)
+    
+  })
+   
   
   output$plot_curva <- renderPlot({
     req(input$ejecutar > 0)
@@ -2254,7 +2420,8 @@ observeEvent(input$btn_descargar_js, {
   }
 
   # 1. Procesar gráficos
-  forest_img <- get_b64(estado$grafico_or)
+  forest_or_img <- get_b64(estado$grafico_or)
+  forest_rr_img <- get_b64(estado$grafico_rr)
   curva_img  <- get_b64(estado$grafico_curva)
   
     # 2. Procesar tablas (convertir a HTML string directamente)
@@ -2276,6 +2443,12 @@ observeEvent(input$btn_descargar_js, {
     "<p>No hay datos de Odds Ratio disponibles.</p>"
   }
   
+  tabla_rr_html <- if(!is.null(estado$resultados_rr)) {
+    convertir_rr_a_html(estado$resultados_rr)
+  } else { 
+    "<p>No hay datos de Riesgos Relativos disponibles.</p>"
+  }
+  
   tabla_freq_comb_html <- if(!is.null(estado$freq_combinada)) {
     convertir_frec_combinada_a_html(estado$freq_combinada)
   } else { 
@@ -2293,34 +2466,56 @@ observeEvent(input$btn_descargar_js, {
   )
   
   # Añadir tasas
-  contenido <- c(contenido, list(
-    h2("Tasas de ataque por exposición"),
-    HTML(tabla_tasas_html)
-  ))
-  
-  contenido <- c(contenido, list(
-    h2("Tabla de Odds Ratio"),
-    HTML(tabla_or_html)
-  ))
-  
-  contenido <- c(contenido, list(
-    h2("Frecuencia combinada de síntomas"),
-    HTML(tabla_freq_comb_html)
-  ))
-  
-    # Añadir Forest Plot solo si existe
-  if(!is.null(forest_img)) {
+  if(!is.null(tabla_tasas_html)) {  
     contenido <- c(contenido, list(
-      h2("Forest Plot"),
-      img(src = forest_img, style="width:100%; border:1px solid #eee;")
+      h2("Tasas de ataque por exposición"),
+      HTML(tabla_tasas_html)
+    ))
+  }   
+  
+    # Añadir RR
+  if(!is.null(tabla_rr_html)) {
+    contenido <- c(contenido, list(
+    h2("Riesgo Relativo por exposición"),
+    HTML(tabla_rr_html)
+    ))
+  }
+  
+    # Añadir Forest Plot RR si existe
+  if(!is.null(forest_rr_img)) {
+    contenido <- c(contenido, list(
+      h2("Forest Plot - Riesgo Relativo"),
+      img(src = forest_rr_img, style="width:60%; border:1px solid #eee;")
     ))
   }
 
+  if(!is.null(tabla_or_html)) {  
+    contenido <- c(contenido, list(
+      h2("Tabla de Odds Ratio"),
+      HTML(tabla_or_html)
+    ))
+  }
+  
+    # Añadir Forest Plot solo si existe
+  if(!is.null(forest_or_img)) {
+    contenido <- c(contenido, list(
+      h2("Forest Plot"),
+      img(src = forest_or_img, style="width:60%; border:1px solid #eee;")
+    ))
+  }
+  
+  if(!is.null(tabla_freq_comb_html)) {  
+    contenido <- c(contenido, list(
+      h2("Frecuencia combinada de síntomas"),
+      HTML(tabla_freq_comb_html)
+    ))
+  }
+    
     # Añadir Curva solo si existe
   if(!is.null(curva_img)) {
     contenido <- c(contenido, list(
       h2("Curva Epidémica"),
-      img(src = curva_img, style="width:100%; border:1px solid #eee;")
+      img(src = curva_img, style="width:60%; border:1px solid #eee;")
     ))
   }
   
