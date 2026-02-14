@@ -1497,14 +1497,114 @@ render_tabla_or <- function(resultados_or) {
   )
 }
 
-calcular_incubacion <- function(datos, vars) {
+control_calidad_fechas <- function(datos, vars_solicitud) {
   
-  if (is.null(vars$variable_tiempo_inicio) || is.null(vars$unidad_tiempo)) {
+  res <- list(ok = TRUE, errores = character(0), advertencias = character(0), resumen = NULL)
+  
+  # Extraer variables desde el objeto de solicitud
+  var_inicio <- vars_solicitud$variable_tiempo_inicio
+  var_ingesta <- vars_solicitud$fecha_ingesta
+  unidad <- tolower(vars_solicitud$unidad_tiempo)
+  
+  # --- existencia ---
+  if (!var_inicio %in% names(datos)) {
+    res$ok <- FALSE
+    res$errores <- c(res$errores, "No existe variable_tiempo_inicio en datos")
+    return(res)
+  }
+  
+  if (!is.null(var_ingesta) && !var_ingesta %in% names(datos)) {
+    res$ok <- FALSE
+    res$errores <- c(res$errores, "No existe variable fecha_ingesta en datos")
+    return(res)
+  }
+  
+  x <- datos[[var_inicio]]
+  y <- if (!is.null(var_ingesta)) datos[[var_ingesta]] else NULL
+  
+  # --- tipo según unidad ---
+  if (unidad == "fecha") {
+    
+    if (!inherits(x, "Date")) {
+      x2 <- try(as.Date(x), silent = TRUE)
+      if (inherits(x2, "try-error")) {
+        res$ok <- FALSE
+        res$errores <- c(res$errores, "variable_tiempo_inicio no es Date convertible")
+        return(res)
+      } else {
+        x <- x2
+        res$advertencias <- c(res$advertencias, "variable_tiempo_inicio convertida a Date")
+      }
+    }
+    
+    if (!is.null(y) && !inherits(y, "Date")) {
+      y2 <- try(as.Date(y), silent = TRUE)
+      if (inherits(y2, "try-error")) {
+        res$ok <- FALSE
+        res$errores <- c(res$errores, "fecha_ingesta no es Date convertible")
+        return(res)
+      } else {
+        y <- y2
+        res$advertencias <- c(res$advertencias, "fecha_ingesta convertida a Date")
+      }
+    }
+  }
+  
+  if (unidad == "hora") {
+    
+    if (!(is.numeric(x) || inherits(x, "POSIXct"))) {
+      res$ok <- FALSE
+      res$errores <- c(res$errores, "variable_tiempo_inicio debe ser numérica o POSIXct")
+      return(res)
+    }
+    
+    if (!is.null(y) && !(is.numeric(y) || inherits(y, "POSIXct"))) {
+      res$ok <- FALSE
+      res$errores <- c(res$errores, "fecha_ingesta debe ser numérica o POSIXct")
+      return(res)
+    }
+  }
+  
+  # --- coherencia temporal ---
+  if (!is.null(y)) {
+    
+    incub <- x - y
+    incub <- incub[!is.na(incub)]
+    
+    if (length(incub) == 0) {
+      res$ok <- FALSE
+      res$errores <- c(res$errores, "No hay pares válidos para calcular incubación")
+      return(res)
+    }
+    
+    if (any(incub < 0)) {
+      res$advertencias <- c(res$advertencias, "Existen incubaciones negativas (posible error en fechas)")
+    }
+    
+    if (unidad == "hora" && any(incub > 720)) {
+      res$advertencias <- c(res$advertencias, "Incubaciones >30 días detectadas")
+    }
+    
+    res$resumen <- list(
+      n_validos = length(incub),
+      mediana = median(incub, na.rm = TRUE),
+      minimo = min(incub, na.rm = TRUE),
+      maximo = max(incub, na.rm = TRUE)
+    )
+  }
+  
+  return(res)
+}
+
+
+calcular_incubacion <- function(datos, vars_solicitud) {
+  
+  if (is.null(vars_solicitud$variable_tiempo_inicio) || is.null(vars_solicitud$unidad_tiempo)) {
     return(list(error = "No se definió variable_tiempo_inicio o unidad_tiempo en YAML"))
   }
   
-  var_inicio <- vars$variable_tiempo_inicio
-  unidad <- tolower(vars$unidad_tiempo)
+  var_inicio <- vars_solicitud$variable_tiempo_inicio
+  unidad <- tolower(vars_solicitud$unidad_tiempo)
   
   if (!var_inicio %in% names(datos)) {
     return(list(error = "La variable de inicio de síntomas no existe en los datos"))
@@ -1514,14 +1614,14 @@ calcular_incubacion <- function(datos, vars) {
   inicio <- datos[[var_inicio]]
   
   # ---- Obtener tiempo de ingesta ----
-  if (!is.null(vars$fecha_ingesta)) {
+  if (!is.null(vars_solicitud$fecha_ingesta)) {
     
     # Si es nombre de variable
-    if (vars$fecha_ingesta %in% names(datos)) {
-      ingesta <- datos[[vars$fecha_ingesta]]
+    if (vars_solicitud$fecha_ingesta %in% names(datos)) {
+      ingesta <- datos[[vars_solicitud$fecha_ingesta]]
     } else {
       # Si es valor fijo
-      ingesta <- rep(vars$fecha_ingesta, length(inicio))
+      ingesta <- rep(vars_solicitud$fecha_ingesta, length(inicio))
     }
     
   } else {
@@ -1580,7 +1680,16 @@ calcular_incubacion <- function(datos, vars) {
     maximo = round(maximo, 2),
     n = n,
     unidad = unidad_salida,
-    clasificacion = clasificacion
+    clasificacion = clasificacion,
+    # Mantener resumen para retrocompatibilidad
+    resumen = list(
+      Mediana = round(mediana, 2),
+      Q1 = round(q1, 2),
+      Q3 = round(q3, 2),
+      Mínimo = round(minimo, 2),
+      Máximo = round(maximo, 2),
+      `N válidos` = n
+    )
   ))
 }
 
@@ -1591,53 +1700,14 @@ clasificar_incubacion <- function(mediana, unidad) {
   }
   
   if (mediana <= 6) {
-    return("Compatible con toxinas preformadas")
+    return("Compatible con toxinas preformadas (Staphylococcus aureus, Bacillus cereus emético)")
   } else if (mediana <= 16) {
     return("Compatible con Clostridium perfringens / Bacillus cereus diarreico")
   } else if (mediana <= 48) {
     return("Compatible con Salmonella / Norovirus")
   } else {
-    return("Compatible con agentes de incubación prolongada")
+    return("Compatible con agentes de incubación prolongada (Campylobacter, E. coli, otros)")
   }
-}
-
-convertir_incubacion_a_html <- function(res) {
-  
-  if (is.null(res)) {
-    return("<p class='alert alert-warning'>No se pudo calcular el tiempo de incubación</p>")
-  }
-  
-  if (!is.null(res$error)) {
-    return(sprintf("<p class='alert alert-warning'>%s</p>", res$error))
-  }
-  
-  html <- sprintf("
-    <table class='table table-sm table-bordered table-striped'>
-      <thead>
-        <tr>
-          <th>Indicador</th>
-          <th>Valor</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>Mediana</td><td>%s %s</td></tr>
-        <tr><td>Q1–Q3</td><td>%s - %s %s</td></tr>
-        <tr><td>Mín–Máx</td><td>%s - %s %s</td></tr>
-        <tr><td>Casos válidos</td><td>%s</td></tr>
-      </tbody>
-    </table>
-    <div class='alert alert-info' style='margin-top: 15px;'>
-      <small><strong>Interpretación:</strong> %s</small>
-    </div>
-  ",
-    res$mediana, res$unidad,
-    res$q1, res$q3, res$unidad,
-    res$minimo, res$maximo, res$unidad,
-    res$n,
-    res$clasificacion
-  )
-  
-  return(html)
 }
 
 
@@ -2741,21 +2811,116 @@ output$resultado <- renderUI({
   })
   
   output$tabla_incubacion <- renderUI({
+  
   req(input$ejecutar > 0)
   
+  # ===================================================================
+  # OPTIMIZACIÓN: Obtener info UNA SOLA VEZ y usarla consistentemente
+  # ===================================================================
+  
   info <- informe()
+  
   if (!is.null(info$error)) return(NULL)
   
-  resultado <- calcular_incubacion(info$datos, info$vars)
+  # ===================================================================
+  # UNIFICACIÓN: Usar SOLO variables del objeto info
+  # Eliminar variables duplicadas (sol, datos) que hacían referencia
+  # a estado$solicitud y estado$datos de forma redundante
+  # ===================================================================
   
-  estado$incubacion <- resultado
+  vars_solicitud <- info$vars  # Única referencia a las variables
+  datos_procesados <- info$datos  # Única referencia a los datos (procesados)
   
-  if (!is.null(resultado$error)) {
-    return(div(class = "alert alert-warning", resultado$error))
+  # Validar que existen las variables necesarias
+  if (is.null(vars_solicitud$variable_tiempo_inicio) ||
+      is.null(vars_solicitud$unidad_tiempo)) {
+    
+    return(div(
+      class = "alert alert-warning",
+      "No está definida la solicitud de incubación en el YAML"
+    ))
   }
   
+  # =====================================================
+  # CONTROL DE CALIDAD DE FECHAS
+  # AHORA USA LA MISMA FUENTE DE DATOS Y VARIABLES
+  # =====================================================
+  
+  qc <- control_calidad_fechas(
+    datos = datos_procesados,  # Datos procesados (consistente)
+    vars_solicitud = vars_solicitud  # Objeto completo de variables
+  )
+  
+  # Error crítico → frena cálculo
+  if (!qc$ok) {
+    return(div(
+      class = "alert alert-danger",
+      qc$errores
+    ))
+  }
+  
+  # Advertencias → se muestran pero continúa
+  advertencias_ui <- NULL
+  if (length(qc$advertencias) > 0) {
+    advertencias_ui <- div(
+      class = "alert alert-warning",
+      tags$strong("Advertencias en datos temporales:"),
+      tags$ul(lapply(qc$advertencias, tags$li))
+    )
+  }
+  
+  # =====================================================
+  # CÁLCULO DE INCUBACIÓN
+  # AHORA USA LA MISMA FUENTE DE DATOS Y VARIABLES
+  # =====================================================
+  
+  res <- calcular_incubacion(
+    datos = datos_procesados,  # Datos procesados (consistente)
+    vars_solicitud = vars_solicitud  # Objeto completo de variables
+  )
+  
+  if (!is.null(res$error)) {
+    return(div(
+      class = "alert alert-warning",
+      res$error
+    ))
+  }
+  
+  estado$incubacion <- res
+  
+  # =====================================================
+  # CONSTRUCCIÓN DE LA TABLA
+  # Usar estructura estándar en lugar de res$resumen
+  # =====================================================
+  
+  # Crear tabla de resultados directamente desde res
+  tabla_data <- data.frame(
+    Indicador = c("Mediana", "Q1", "Q3", "Mínimo", "Máximo", "N válidos"),
+    Valor = c(
+      paste(res$mediana, res$unidad),
+      paste(res$q1, res$unidad),
+      paste(res$q3, res$unidad),
+      paste(res$minimo, res$unidad),
+      paste(res$maximo, res$unidad),
+      as.character(res$n)
+    ),
+    stringsAsFactors = FALSE
+  )
+  
+  filas <- lapply(seq_len(nrow(tabla_data)), function(i) {
+    tags$tr(
+      tags$td(tabla_data$Indicador[i]),
+      tags$td(tabla_data$Valor[i], style = "text-align: center;")
+    )
+  })
+  
   tags$div(
+    
+    # Mostrar advertencias si existen
+    advertencias_ui,
+    
     class = "table-responsive",
+    
     tags$table(
       class = "table table-sm table-bordered table-striped",
       tags$thead(
@@ -2764,23 +2929,18 @@ output$resultado <- renderUI({
           tags$th("Valor", style = "text-align: center;")
         )
       ),
-      tags$tbody(
-        tags$tr(tags$td("Mediana"), tags$td(paste(resultado$mediana, resultado$unidad))),
-        tags$tr(tags$td("Q1–Q3"), tags$td(paste(resultado$q1, "-", resultado$q3, resultado$unidad))),
-        tags$tr(tags$td("Mín–Máx"), tags$td(paste(resultado$minimo, "-", resultado$maximo, resultado$unidad))),
-        tags$tr(tags$td("Casos válidos"), tags$td(resultado$n))
-      )
+      tags$tbody(filas)
     ),
+    
     tags$div(
       class = "alert alert-info",
       style = "margin-top: 15px;",
-      tags$small(
-        tags$strong("Interpretación:"), " ",
-        resultado$clasificacion
-      )
+      tags$strong("Interpretación epidemiológica orientativa: "),
+      res$clasificacion
     )
   )
 })
+
 
   
   output$debug_info <- renderText({
