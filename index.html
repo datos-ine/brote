@@ -766,13 +766,6 @@ convertir_or_a_html &lt;- function(resultados_or) {
         &lt;/tr&gt;
       &lt;/thead&gt;
     &lt;/table&gt;
-    &lt;div class='alert alert-info' style='margin-top: 15px;'&gt;
-      &lt;small&gt;
-        &lt;strong&gt;Interpretación:&lt;/strong&gt;
-        OR &gt; 1: asociación positiva (mayor riesgo), OR &lt; 1: asociación negativa (menor riesgo), 
-        OR = 1: no asociación. IC 95%% que no incluye 1 indica significancia estadística.
-      &lt;/small&gt;
-    &lt;/div&gt;
   ", paste(filas_html, collapse = "\n"))
   
   return(html_tabla)
@@ -936,7 +929,7 @@ convertir_frec_simple_sintomas_a_html &lt;- function(tabla_freq) {
     &lt;div class='alert alert-info' style='margin-top: 15px;'&gt;
       &lt;small&gt;
         &lt;strong&gt;Nota:&lt;/strong&gt; Esta tabla muestra la frecuencia individual de cada síntoma entre los casos,
-        ordenados de mayor a menor. Puede utilizarse como apoyo para la construcción de una definición de caso epidemiológica.
+        ordenados de mayor a menor.
       &lt;/small&gt;
     &lt;/div&gt;
   ", paste(filas_html, collapse = "\n"))
@@ -1069,7 +1062,7 @@ render_univariada &lt;- function(resultados) {
       class = "alert alert-info",
       tags$small(
         "Nota: Las variables se clasifican como 'categóricas' o 'numéricas' basándose en ",
-        "la especificación del YAML o reglas heurísticas. ",
+        "la especificación del YAML. ",
         "Variables numéricas con pocos valores únicos pueden tratarse como categóricas."
       )
     ),
@@ -1307,8 +1300,7 @@ crear_forest_plot &lt;- function(resultados, tipo = "OR") {
   medida_campo &lt;- if(tipo == "OR") "odds_ratio" else "riesgo_relativo"
   titulo &lt;- paste0("Forest Plot - ", if(tipo == "OR") "Odds Ratios" else "Riesgos Relativos", " por Exposición")
   eje_x &lt;- paste0(if(tipo == "OR") "Odds Ratio" else "Riesgo Relativo", " (escala logarítmica)")
-  caption_text &lt;- paste0("Líneas verticales representan intervalos de confianza al 95%\n",
-                        tipo, " &gt; 1: mayor riesgo, ", tipo, " &lt; 1: menor riesgo")
+  caption_text &lt;- "Líneas verticales representan intervalos de confianza al 95%"
   
   # Extraer datos de una vez (evitar múltiples llamadas a sapply)
   n &lt;- length(resultados)
@@ -1369,7 +1361,7 @@ render_tabla_tasas &lt;- function(resultados_tasas) {
         tags$li("Las variables no contienen valores lógicos (VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0)"),
         tags$li("Faltan datos en las variables de evento o exposición"),
         tags$li("Las tablas 2x2 no pudieron construirse (no hay suficiente variación en los datos)"),
-        tags$li("Verifique que las columnas en el CSV coincidan con las especificadas en el YAML")
+        tags$li("Verifique que las columnas de los datos coincidan con las especificadas en el YAML")
       ),
       tags$p("Tip: Las variables lógicas deben usar valores como: VERDADERO/FALSO, SI/NO, TRUE/FALSE, 1/0")
     ))
@@ -1522,15 +1514,6 @@ render_tabla_rr &lt;- function(resultados_rr) {
         )
       ),
       tags$tbody(filas)
-    ),
-    
-    div(
-      class = "alert alert-info mt-3",
-      tags$small(
-        strong("Interpretación:"),
-        "RR &gt; 1: asociación positiva (mayor riesgo), RR &lt; 1: asociación negativa (menor riesgo), ",
-        "RR = 1: no asociación. IC 95% que no incluye 1 indica significancia estadística."
-      )
     )
   )
 }
@@ -1570,17 +1553,9 @@ render_tabla_or &lt;- function(resultados_or) {
         )
       ),
       tags$tbody(filas)
-    ),
-    
-    div(
-      class = "alert alert-info mt-3",
-      tags$small(
-        strong("Interpretación:"),
-        "OR &gt; 1: asociación positiva (mayor riesgo), OR &lt; 1: asociación negativa (menor riesgo), ",
-        "OR = 1: no asociación. IC 95% que no incluye 1 indica significancia estadística."
-      )
     )
   )
+  
 }
 
 control_calidad_fechas &lt;- function(datos, vars_solicitud) {
@@ -1786,14 +1761,67 @@ clasificar_incubacion &lt;- function(mediana, unidad) {
   }
   
   if (mediana &lt;= 6) {
-    return("Compatible con toxinas preformadas (Staphylococcus aureus, Bacillus cereus emético)")
+    return("Mediana menor o igual a 6 horas)")
   } else if (mediana &lt;= 16) {
-    return("Compatible con Clostridium perfringens / Bacillus cereus diarreico")
+    return("Mediana menor o igual a 16 horas")
   } else if (mediana &lt;= 48) {
-    return("Compatible con Salmonella / Norovirus")
+    return("Mediana menor o igual a 48 horas")
   } else {
-    return("Compatible con agentes de incubación prolongada (Campylobacter, E. coli, otros)")
+    return("Mediana mayor a 48 horas")
   }
+}
+
+convertir_incubacion_a_html &lt;- function(res) {
+
+  if (is.null(res)) {
+    return("&lt;p class='alert alert-warning'&gt;No se pudo calcular la incubación&lt;/p&gt;")
+  }
+
+  if (!is.null(res$error)) {
+    return(sprintf("&lt;p class='alert alert-warning'&gt;%s&lt;/p&gt;", res$error))
+  }
+
+  tabla &lt;- res$resumen
+
+  filas_html &lt;- paste0(
+    "&lt;tr&gt;&lt;td&gt;", names(tabla), "&lt;/td&gt;&lt;td&gt;",
+    round(unlist(tabla), 2),
+    "&lt;/td&gt;&lt;/tr&gt;",
+    collapse = "\n"
+  )
+
+  html &lt;- sprintf("
+    &lt;h3&gt;Periodo de incubación&lt;/h3&gt;
+
+    &lt;table class='table table-sm table-bordered table-striped'&gt;
+      &lt;thead&gt;
+        &lt;tr&gt;
+          &lt;th&gt;Indicador&lt;/th&gt;
+          &lt;th&gt;Valor&lt;/th&gt;
+        &lt;/tr&gt;
+      &lt;/thead&gt;
+      &lt;tbody&gt;
+        %s
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+
+    &lt;div class='alert alert-info'&gt;
+      &lt;strong&gt;Interpretación epidemiológica orientativa:&lt;/strong&gt;&lt;br&gt;
+      %s
+    &lt;/div&gt;
+
+    &lt;div class='alert alert-secondary'&gt;
+      &lt;small&gt;
+        El periodo de incubación se estimó como diferencia entre inicio de síntomas e ingesta.
+        Resultados orientativos sujetos a la calidad de los datos.
+      &lt;/small&gt;
+    &lt;/div&gt;
+  ",
+  filas_html,
+  res$clasificacion
+  )
+
+  return(html)
 }
 
 
@@ -2792,7 +2820,7 @@ output$resultado &lt;- renderUI({
           x = "Fecha de inicio de síntomas",
           y = "Número de casos"
         ) +
-        theme_minimal(base_size = 14) +
+        theme_minimal(base_size = 12) +
         theme(
           plot.title = element_text(hjust = 0.5, face = "bold"),
           panel.grid.minor = element_blank(),
@@ -3043,6 +3071,8 @@ output$resultado &lt;- renderUI({
 observeEvent(input$btn_descargar_js, {
   showNotification("Preparando documento...", type = "message")
   
+  ev &lt;- estado$solicitud$definicion_problema$evento
+  
   # Función interna para convertir gráficos a Base64
   get_b64 &lt;- function(p) {
     if (is.null(p)) return(NULL)
@@ -3109,10 +3139,25 @@ observeEvent(input$btn_descargar_js, {
     h1("Informe de Investigación de Brote", style="text-align:center; color:#2c3e50;"),
     p(tags$b("Fecha: "), format(Sys.time(), "%d/%m/%Y %H:%M")),
     hr(),
-    h2("Descripción univariada"),
-    HTML(tabla_desc_html),
-    br()
+    h2(ev$nombre, style = "color: #2c3e50;"),
+    h4("Definición de caso"),
+    p(ev$definicion_caso, style = "margin-left: 15px;"),
+    h4("Población, lugar y período"),
+    tags$ul(
+      tags$li(strong("Población: "), ev$poblacion_en_riesgo),
+      tags$li(strong("Lugar: "), ev$lugar),
+      tags$li(strong("Período: "), ev$periodo_tiempo)
+    ),
+    hr()
   )
+  
+  # Añadir desc univariada
+  if(!is.null(tabla_desc_html)) {  
+    contenido &lt;- c(contenido, list(
+      h2("Descripción univariada"),
+      HTML(tabla_desc_html)
+    ))
+  }   
   
   # Añadir tasas
   if(!is.null(tabla_tasas_html)) {  
@@ -3134,7 +3179,7 @@ observeEvent(input$btn_descargar_js, {
   if(!is.null(forest_rr_img)) {
     contenido &lt;- c(contenido, list(
       h2("Forest Plot - Riesgo Relativo"),
-      img(src = forest_rr_img, style="width:60%; border:1px solid #eee;")
+      img(src = forest_rr_img, style="width:70%; border:1px solid #eee;")
     ))
   }
 
@@ -3149,7 +3194,7 @@ observeEvent(input$btn_descargar_js, {
   if(!is.null(forest_or_img)) {
     contenido &lt;- c(contenido, list(
       h2("Forest Plot"),
-      img(src = forest_or_img, style="width:60%; border:1px solid #eee;")
+      img(src = forest_or_img, style="width:70%; border:1px solid #eee;")
     ))
   }
   
@@ -3171,7 +3216,7 @@ observeEvent(input$btn_descargar_js, {
   if(!is.null(curva_img)) {
     contenido &lt;- c(contenido, list(
       h2("Curva Epidémica"),
-      img(src = curva_img, style="width:60%; border:1px solid #eee;")
+      img(src = curva_img, style="width:70%; border:1px solid #eee;")
     ))
   }
   
